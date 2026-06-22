@@ -142,15 +142,34 @@ def _parse_detail_html(html: str, item: dict):
     if auth_el:
         item["author"] = auth_el.get_text(strip=True)
 
-    # Isi: cari paragraf utama konten
+    # Isi: cari paragraf utama konten dengan MEMPERTAHANKAN NEWLINE
     if not item["isi"]:
         # Coba selector spesifik user: div ke-4 > div > div > div > div > div > div:nth-child(2) > p
-        paras = soup.find_all("p")
-        for p in paras:
-            teks = p.get_text(strip=True)
-            if len(teks) > 50:  # ambil paragraf yang cukup panjang
-                item["isi"] = teks[:500]
-                break
+        # Cari container konten utama
+        content_container = soup.find("div", class_=re.compile("content|post-content|article-body"))
+        if not content_container:
+            # Fallback: cari div yang punya banyak paragraf
+            containers = soup.find_all("div")
+            for cont in containers:
+                paras = cont.find_all("p", recursive=False)
+                if len(paras) >= 2:
+                    content_container = cont
+                    break
+        
+        if content_container:
+            # Gunakan get_text dengan separator newline
+            isi_text = content_container.get_text(separator="\n", strip=True)
+            if len(isi_text) > 50:
+                item["isi"] = isi_text
+        
+        # Fallback: ambil paragraf panjang pertama jika container tidak ditemukan
+        if not item["isi"]:
+            paras = soup.find_all("p")
+            for p in paras:
+                teks = p.get_text(separator="\n", strip=True)
+                if len(teks) > 50:
+                    item["isi"] = teks
+                    break
 
     # Referensi / file: YouTube, PDF, Google Drive
     if not item["file_url"]:
@@ -280,7 +299,47 @@ def _scrape_dengan_playwright(limit: Optional[int]) -> List[Dict]:
                     dpage.goto(href, timeout=30000, wait_until="domcontentloaded")
                     _wait_cloudflare(dpage, max_wait=20000)
                     dpage.wait_for_timeout(2000)
-                    _parse_detail_html(dpage.content(), item)
+                    
+                    # Update judul jika ada
+                    judul_el = dpage.query_selector(".post-title, h1, h2")
+                    if judul_el:
+                        t = judul_el.inner_text().strip()
+                        if t:
+                            item["judul"] = t
+                    
+                    # Update author
+                    auth_el = dpage.query_selector("#startedby, [class*='author'], [class*='posted-by']")
+                    if auth_el:
+                        item["author"] = auth_el.inner_text().strip()
+                    
+                    # Ambil isi dengan inner_text() untuk mempertahankan newline
+                    if not item["isi"]:
+                        # Cari container konten utama
+                        content_el = dpage.query_selector(
+                            ".content, .post-content, .article-body, "
+                            "[class*='content'], [class*='post-body']"
+                        )
+                        if content_el:
+                            isi_text = content_el.inner_text().strip()
+                            if len(isi_text) > 50:
+                                item["isi"] = isi_text
+                        
+                        # Fallback: ambil dari body atau paragraf
+                        if not item["isi"]:
+                            paras = dpage.query_selector_all("p")
+                            combined = []
+                            for p in paras:
+                                txt = p.inner_text().strip()
+                                if len(txt) > 30:
+                                    combined.append(txt)
+                            if combined:
+                                item["isi"] = "\n\n".join(combined)
+                    
+                    # File URL
+                    file_el = dpage.query_selector("a[href*='youtube.com'], a[href*='youtu.be'], a[href*='.pdf'], a[href*='drive.google'], a[href*='docs.google']")
+                    if file_el:
+                        item["file_url"] = file_el.get_attribute("href") or ""
+                    
                     dpage.close()
                     logger.info(f"[PENDAFTARAN] OK: {item['judul'][:60]!r}")
                 except Exception as e:

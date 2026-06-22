@@ -171,6 +171,7 @@ def scrape_lepkom(limit: Optional[int] = None) -> List[Dict]:
                         item["author"] = auth_el.inner_text().strip()
 
                     # Isi: .table-responsive (tabel utama konten pengumuman)
+                    # Gunakan inner_text() untuk mempertahankan newline
                     isi_el = dpage.query_selector(
                         ".table-responsive, "
                         ".hoverable-table, "
@@ -178,7 +179,7 @@ def scrape_lepkom(limit: Optional[int] = None) -> List[Dict]:
                         "div.post-content"
                     )
                     if isi_el:
-                        item["isi"] = isi_el.inner_text().strip()[:500]
+                        item["isi"] = isi_el.inner_text().strip()
 
                     # File unduhan: .btn.green[href] atau tombol unduh
                     file_el = dpage.query_selector(

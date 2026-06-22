@@ -34,12 +34,15 @@ def validasi_konfigurasi() -> bool:
         logger.error("DB_HOST atau DB_NAME tidak dikonfigurasi. Periksa file .env")
         ada_error = True
 
-    # Cek Discord Webhook (tidak wajib, hanya warning)
-    if not config.DISCORD_WEBHOOK_URL:
+    # Cek Discord Webhook (tidak wajib semua, hanya warning)
+    webhook_aktif = sum(1 for url in config.DISCORD_WEBHOOKS.values() if url)
+    if webhook_aktif == 0:
         logger.warning(
-            "DISCORD_WEBHOOK_URL belum diset. Notifikasi Discord tidak akan dikirim. "
-            "Tambahkan di file .env jika ingin mengaktifkan notifikasi."
+            "Tidak ada webhook Discord yang diset. Notifikasi Discord tidak akan dikirim. "
+            "Tambahkan webhook di file .env jika ingin mengaktifkan notifikasi."
         )
+    else:
+        logger.info(f"{webhook_aktif}/5 webhook Discord aktif.")
 
     return not ada_error
 
@@ -64,7 +67,9 @@ def main():
     logger.info(f"  Database  : {config.DB_USER}@{config.DB_HOST}:{config.DB_PORT}/{config.DB_NAME}")
     logger.info(f"  Interval  : {config.MONITORING_INTERVAL_MINUTES} menit")
     logger.info(f"  Limit awal: {config.INITIAL_SCRAPE_LIMIT} per website")
-    logger.info(f"  Discord   : {'Aktif' if config.DISCORD_WEBHOOK_URL else 'Tidak aktif'}")
+    webhook_aktif = sum(1 for url in config.DISCORD_WEBHOOKS.values() if url)
+    logger.info(f"  Discord   : {webhook_aktif}/5 webhook aktif")
+    logger.info(f"  Notif initial: {'YA' if config.SEND_DISCORD_ON_INITIAL else 'TIDAK'}")
 
     # Langkah 2: Inisialisasi database
     logger.info("Menginisialisasi database MySQL...")

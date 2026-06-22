@@ -8,8 +8,8 @@ import time
 from typing import List, Dict
 
 import config
-from database.db import simpan_pengumuman, cek_duplikat
-from notifier.discord import kirim_notifikasi_discord
+from database.db import simpan_pengumuman
+from notifier.discord import kirim_notifikasi_batch, check_webhook_status
 from scraper.baak import scrape_baak
 from scraper.lepkom import scrape_lepkom
 from scraper.kemahasiswaan import scrape_kemahasiswaan
@@ -101,12 +101,15 @@ def initial_scraping():
     """
     Scraping awal saat program pertama kali dijalankan.
     Mengambil maksimal INITIAL_SCRAPE_LIMIT pengumuman per website.
-    Tidak mengirim notifikasi Discord (data dianggap sebagai baseline).
+    Kirim notifikasi Discord jika SEND_DISCORD_ON_INITIAL=true.
     """
     logger.info("=" * 60)
     logger.info("INITIAL SCRAPING DIMULAI")
     logger.info(f"Target: {config.INITIAL_SCRAPE_LIMIT} pengumuman terbaru per website")
     logger.info("=" * 60)
+    
+    # Check webhook status
+    check_webhook_status()
 
     semua_hasil = jalankan_scraper_semua(limit=config.INITIAL_SCRAPE_LIMIT)
 
@@ -118,11 +121,13 @@ def initial_scraping():
     total_update = 0
     total_unchanged = 0
     total_error = 0
+    pengumuman_baru = []
     
     for pengumuman in semua_hasil:
         result = simpan_pengumuman(pengumuman)
         if result == "insert":
             total_insert += 1
+            pengumuman_baru.append(pengumuman)
         elif result == "update":
             total_update += 1
         elif result == "unchanged":
@@ -138,6 +143,19 @@ def initial_scraping():
     logger.info(f"Total UNCHANGED  : {total_unchanged} pengumuman tidak berubah")
     if total_error > 0:
         logger.warning(f"Total ERROR      : {total_error} gagal disimpan")
+    
+    # Kirim notifikasi Discord jika diaktifkan
+    if config.SEND_DISCORD_ON_INITIAL and pengumuman_baru:
+        logger.info(f"[DISCORD] SEND_DISCORD_ON_INITIAL=true, kirim {len(pengumuman_baru)} notifikasi")
+        kirim_notifikasi_batch(
+            pengumuman_baru, 
+            delay_seconds=config.DISCORD_SEND_DELAY_SECONDS
+        )
+    elif config.SEND_DISCORD_ON_INITIAL and not pengumuman_baru:
+        logger.info("[DISCORD] SEND_DISCORD_ON_INITIAL=true, tetapi tidak ada data baru")
+    else:
+        logger.info("[DISCORD] SEND_DISCORD_ON_INITIAL=false, notifikasi tidak dikirim")
+    
     logger.info("Sistem masuk ke mode monitoring...")
     logger.info("=" * 60)
 
@@ -146,8 +164,8 @@ def siklus_monitoring():
     """
     Satu siklus monitoring:
     1. Ambil data terbaru dari semua website.
-    2. Cek apakah ada pengumuman baru (belum ada di database).
-    3. Simpan yang baru dan kirim notifikasi Discord.
+    2. Simpan ke database dengan UPSERT.
+    3. Kirim notifikasi Discord untuk pengumuman INSERT baru.
     """
     logger.info("-" * 60)
     logger.info("Memulai siklus monitoring...")
@@ -159,14 +177,8 @@ def siklus_monitoring():
         return
 
     pengumuman_baru = []
-    notif_discord_terkirim = 0
     
     for pengumuman in semua_hasil:
-        link   = pengumuman.get("link",   "")
-        sumber = pengumuman.get("sumber", "")
-        if not link:
-            continue
-        
         # Simpan dengan UPSERT
         result = simpan_pengumuman(pengumuman)
         
@@ -174,15 +186,15 @@ def siklus_monitoring():
         if result == "insert":
             pengumuman_baru.append(pengumuman)
             logger.info(
-                f"[NEW] [{sumber}] {pengumuman.get('judul', '')[:80]}"
+                f"[NEW] [{pengumuman.get('sumber', '')}] {pengumuman.get('judul', '')[:80]}"
             )
 
     if pengumuman_baru:
         logger.info(f"Total {len(pengumuman_baru)} pengumuman baru. Kirim notifikasi...")
-        for p in pengumuman_baru:
-            if kirim_notifikasi_discord(p):
-                notif_discord_terkirim += 1
-        logger.info(f"Total notifikasi Discord terkirim: {notif_discord_terkirim}")
+        kirim_notifikasi_batch(
+            pengumuman_baru, 
+            delay_seconds=config.DISCORD_SEND_DELAY_SECONDS
+        )
     else:
         logger.info("Tidak ada pengumuman baru. Menunggu siklus berikutnya.")
 

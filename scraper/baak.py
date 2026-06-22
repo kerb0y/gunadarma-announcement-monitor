@@ -111,44 +111,76 @@ def _parse_detail_html(html: str, item: dict, detail_url: str = ""):
     if auth:
         item["author"] = auth.get_text(strip=True)
 
-    # Isi: div[class='offset-md-top-20'] yang berisi konten (bukan metadata)
-    # Ada 2 div dengan class ini: pertama untuk metadata, kedua untuk isi
+    # Isi: Strategi bertingkat dengan fallback
+    isi_text = ""
+    strategy_used = ""
+    
+    # Strategi 1: Cari semua div.offset-md-top-20
     isi_divs = soup.find_all("div", class_="offset-md-top-20")
-    isi_el = None
+    logger.info(f"[BAAK] Elemen div.offset-md-top-20 ditemukan: {len(isi_divs)}")
     
     if len(isi_divs) >= 2:
-        # Ambil div kedua (index 1) yang berisi isi berita
+        # Ambil div kedua (index 1) yang biasanya berisi isi berita
+        # PENTING: gunakan separator="\n" untuk mempertahankan newline
         isi_el = isi_divs[1]
-        logger.info("[BAAK] Selector isi ditemukan: YA (div ke-2)")
+        isi_text = isi_el.get_text(separator="\n", strip=True)
+        strategy_used = "div.offset-md-top-20 ke-2"
+        logger.info(f"[BAAK] Strategi: {strategy_used}")
+        
     elif len(isi_divs) == 1:
         # Jika hanya ada 1, cek apakah berisi metadata atau isi
         first_div = isi_divs[0]
-        # Jika berisi <ul> atau <li>, kemungkinan metadata
+        # Jika berisi <ul> atau <li>, kemungkinan metadata, skip
         if first_div.find("ul") or first_div.find("li"):
-            logger.warning("[BAAK] Hanya ada 1 div offset-md-top-20, sepertinya metadata")
+            logger.warning("[BAAK] Div offset-md-top-20 berisi metadata (ul/li), skip")
+            isi_text = ""
         else:
-            isi_el = first_div
-            logger.info("[BAAK] Selector isi ditemukan: YA (div ke-1)")
+            isi_text = first_div.get_text(separator="\n", strip=True)
+            strategy_used = "div.offset-md-top-20 ke-1"
+            logger.info(f"[BAAK] Strategi: {strategy_used}")
     
-    if isi_el:
-        # Ambil semua teks dari div
-        isi_text = isi_el.get_text(separator=" ", strip=True)
-        
-        # Bersihkan whitespace berlebih
-        isi_text = " ".join(isi_text.split())
-        
-        logger.info(f"[BAAK] Panjang isi: {len(isi_text)} karakter")
-        
-        if isi_text:
-            logger.info(f"[BAAK] Preview isi: {isi_text[:150]}...")
-            item["isi"] = isi_text[:500]
-        else:
-            logger.warning("[BAAK] Isi kosong setelah ekstraksi teks")
-            item["isi"] = ""
+    # Fallback 2: Jika isi masih kosong, coba .cell-sm-8.cell-md-8.text-left div.offset-md-top-20
+    if not isi_text:
+        logger.warning("[BAAK] Strategi 1 gagal, coba fallback 2: .cell-sm-8 .cell-md-8 .text-left div.offset-md-top-20")
+        parent = soup.find("div", class_=re.compile(r"cell-sm-8.*cell-md-8.*text-left"))
+        if parent:
+            isi_divs_nested = parent.find_all("div", class_="offset-md-top-20")
+            if len(isi_divs_nested) >= 2:
+                isi_el = isi_divs_nested[1]
+                isi_text = isi_el.get_text(separator="\n", strip=True)
+                strategy_used = "fallback: parent .cell-sm-8 div ke-2"
+                logger.info(f"[BAAK] Strategi: {strategy_used}")
+    
+    # Fallback 3: Jika masih kosong, ambil dari .cell-sm-8.cell-md-8.text-left langsung
+    if not isi_text:
+        logger.warning("[BAAK] Strategi 2 gagal, coba fallback 3: .cell-sm-8 .cell-md-8 .text-left")
+        parent = soup.find("div", class_=re.compile(r"cell-sm-8.*cell-md-8.*text-left"))
+        if parent:
+            # Hapus elemen metadata (h3, ul, li) dulu
+            for tag in parent.find_all(["h3", "ul", "li", "hr"]):
+                tag.decompose()
+            isi_text = parent.get_text(separator="\n", strip=True)
+            strategy_used = "fallback: parent .cell-sm-8 (cleaned)"
+            logger.info(f"[BAAK] Strategi: {strategy_used}")
+    
+    # Validasi: Jangan simpan jika hanya berisi tanggal/author
+    if isi_text:
+        # Filter jika isi HANYA berisi pola tanggal/author (contoh: "15/05/2026 Admin" atau "15/05/2026Admin")
+        # Tapi cek dulu apakah ada newline - jika ada newline berarti bukan cuma tanggal/author
+        if "\n" not in isi_text and re.match(r"^\d{2}/\d{2}/\d{4}\s*\w+$", isi_text):
+            logger.warning(f"[BAAK] Isi hanya berisi tanggal/author: '{isi_text}', dikosongkan")
+            isi_text = ""
+    
+    # Log hasil
+    logger.info(f"[BAAK] Panjang isi: {len(isi_text)} karakter")
+    
+    if isi_text:
+        logger.info(f"[BAAK] Preview isi: {isi_text[:200]}...")
+        item["isi"] = isi_text
     else:
-        logger.warning("[BAAK] Selector isi ditemukan: TIDAK")
+        logger.warning("[BAAK] Isi kosong setelah ekstraksi detail page.")
         item["isi"] = ""
-        # Simpan debug HTML
+        # Simpan debug HTML jika isi kosong
         with open("debug_baak_detail.html", "w", encoding="utf-8") as f:
             f.write(html)
         logger.warning(f"[BAAK] Debug HTML disimpan ke: {os.path.abspath('debug_baak_detail.html')}")

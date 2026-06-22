@@ -13,11 +13,16 @@ Selector aktual (diverifikasi Juni 2026 dari user):
   Detail: .entry-title.mb-50.font-weight-900  (judul)
           .ck-content                         (isi)
           .author-name.font-weight-bold       (author + tanggal)
+          
+Special handling untuk tabel delegasi:
+  - Deteksi keberadaan <td> dalam konten
+  - Parse struktur tabel berdasarkan <tr> dan <td>
+  - Format khusus untuk tabel delegasi (5 kolom: No, Nama, NPM, Prodi, Keterangan)
 """
 
 import re
 import os
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 from bs4 import BeautifulSoup
 
 from utils.logger import logger
@@ -27,6 +32,230 @@ SUMBER          = "KEMAHASISWAAN"
 URL             = "https://kemahasiswaan.gunadarma.ac.id/"
 BASE_URL        = "https://kemahasiswaan.gunadarma.ac.id"
 DEBUG_HTML_FILE = "debug_kemahasiswaan.html"
+
+
+def _extract_table_cells(content_element) -> List[str]:
+    """
+    Extract cells dari tabel dalam content.
+    
+    Strategy:
+    1. Cari <table> dan parse <tr> -> <td>
+    2. Fallback: ambil semua <td> langsung jika table tidak jelas
+    
+    Returns:
+        List of cell texts (stripped, non-empty)
+    """
+    if not content_element:
+        return []
+    
+    cells = []
+    
+    # Strategy 1: Parse table structure
+    tables = content_element.find_all("table")
+    logger.info(f"[KEMAHASISWAAN] Jumlah <table> ditemukan: {len(tables)}")
+    
+    if tables:
+        for table in tables:
+            rows = table.find_all("tr")
+            for row in rows:
+                tds = row.find_all("td")
+                for td in tds:
+                    text = td.get_text(" ", strip=True)
+                    if text:
+                        cells.append(text)
+    
+    # Strategy 2: Fallback - ambil semua <td> jika table tidak ditemukan
+    if not cells:
+        all_tds = content_element.find_all("td")
+        logger.info(f"[KEMAHASISWAAN] Jumlah <td> ditemukan (fallback): {len(all_tds)}")
+        for td in all_tds:
+            text = td.get_text(" ", strip=True)
+            if text:
+                cells.append(text)
+    else:
+        # Log jumlah td jika table ditemukan
+        all_tds_count = len(content_element.find_all("td"))
+        logger.info(f"[KEMAHASISWAAN] Jumlah <td> ditemukan: {all_tds_count}")
+    
+    return cells
+
+
+def _is_delegasi_table(cells: List[str]) -> bool:
+    """
+    Deteksi apakah cells merupakan tabel delegasi.
+    
+    Ciri-ciri:
+    - Jumlah cells kelipatan 5 (No, Nama, NPM, Prodi, Keterangan)
+    - Ada angka urut di kolom pertama
+    - Ada NPM (8 digit) di kolom ketiga
+    - Ada Program Studi dengan (S1) atau nama prodi
+    - Ada Keterangan dengan kata kunci: Ketua, Manajer, Anggota
+    
+    Validasi tidak terlalu ketat agar data valid tidak terbuang.
+    """
+    if not cells or len(cells) < 5:
+        return False
+    
+    # Cek apakah kelipatan 5
+    if len(cells) % 5 != 0:
+        return False
+    
+    # Ambil sample baris pertama (skip header jika ada)
+    # Header biasanya: No, Nama, NPM, Program Studi, Keterangan
+    sample_start = 0
+    if cells[0].lower() in ["no", "no."]:
+        # Skip header row
+        sample_start = 5
+    
+    if sample_start >= len(cells):
+        return False
+    
+    # Validasi ringan pada baris pertama data
+    # Kolom 0: harus angka atau kosong (urut)
+    col_0 = cells[sample_start].strip()
+    is_number = col_0.isdigit() or col_0 == ""
+    
+    # Kolom 2: NPM (8 digit, bisa ada spasi)
+    col_2 = cells[sample_start + 2].strip().replace(" ", "")
+    is_npm = col_2.isdigit() and len(col_2) >= 7 and len(col_2) <= 10
+    
+    # Kolom 3: Program Studi (mengandung S1, D3, Teknik, Sistem, dll)
+    col_3_lower = cells[sample_start + 3].lower()
+    is_prodi = any(keyword in col_3_lower for keyword in ["s1", "d3", "teknik", "sistem", "informatika", "ekonomi", "manajemen", "akuntansi", "psikologi", "sastra"])
+    
+    # Kolom 4: Keterangan (mengandung Ketua, Manajer, Anggota, dll)
+    col_4_lower = cells[sample_start + 4].lower()
+    is_keterangan = any(keyword in col_4_lower for keyword in ["ketua", "manajer", "anggota", "peserta", "delegasi"])
+    
+    # Minimal 2 dari 4 validasi harus benar
+    valid_count = sum([is_number, is_npm, is_prodi, is_keterangan])
+    
+    return valid_count >= 2
+
+
+def _format_delegasi_table(cells: List[str]) -> str:
+    """
+    Format cells tabel delegasi menjadi list rapi untuk Discord.
+    
+    Format output:
+    📋 Daftar Delegasi
+    
+    1. Nama Lengkap
+       NPM: 12345678
+       Program Studi: Teknik Mesin (S1)
+       Keterangan: Ketua / Manajer
+    
+    2. Nama Lengkap 2
+       ...
+    """
+    if not cells or len(cells) < 5:
+        return ""
+    
+    # Skip header row jika ada (No, Nama, NPM, Program Studi, Keterangan)
+    start_idx = 0
+    if cells[0].lower() in ["no", "no."]:
+        logger.info("[KEMAHASISWAAN] Header tabel terdeteksi, skip header row")
+        start_idx = 5
+    
+    # Group cells per 5 kolom
+    rows = []
+    for i in range(start_idx, len(cells), 5):
+        if i + 4 < len(cells):
+            no = cells[i].strip()
+            nama = cells[i + 1].strip()
+            npm = cells[i + 2].strip()
+            prodi = cells[i + 3].strip()
+            keterangan = cells[i + 4].strip()
+            
+            # Skip jika baris kosong atau duplikat header
+            if not nama or nama.lower() == "nama":
+                continue
+            
+            rows.append({
+                "no": no,
+                "nama": nama,
+                "npm": npm,
+                "prodi": prodi,
+                "keterangan": keterangan
+            })
+    
+    if not rows:
+        return ""
+    
+    logger.info(f"[KEMAHASISWAAN] Jumlah baris delegasi terparse: {len(rows)}")
+    
+    # Format output
+    lines = ["📋 Daftar Delegasi\n"]
+    
+    for idx, row in enumerate(rows, 1):
+        # Gunakan nomor urut dari data, fallback ke idx
+        no_display = row["no"] if row["no"].isdigit() else str(idx)
+        
+        lines.append(f"{no_display}. {row['nama']}")
+        lines.append(f"   NPM: {row['npm']}")
+        lines.append(f"   Program Studi: {row['prodi']}")
+        lines.append(f"   Keterangan: {row['keterangan']}")
+        
+        # Tambahkan blank line antar entry kecuali entry terakhir
+        if idx < len(rows):
+            lines.append("")
+    
+    result = "\n".join(lines)
+    
+    # Log preview
+    preview_len = min(200, len(result))
+    logger.info(f"[KEMAHASISWAAN] Preview tabel delegasi: {result[:preview_len]}...")
+    
+    return result
+
+
+def _process_content_with_table(content_element) -> Tuple[str, bool]:
+    """
+    Process content yang mungkin mengandung tabel.
+    
+    Returns:
+        (processed_text, has_delegasi_table)
+    """
+    # Extract table cells
+    cells = _extract_table_cells(content_element)
+    
+    if not cells:
+        logger.info("[KEMAHASISWAAN] Tidak ada <td> ditemukan, gunakan text extraction biasa")
+        return content_element.get_text(separator="\n", strip=True), False
+    
+    # Check if it's delegasi table
+    is_delegasi = _is_delegasi_table(cells)
+    logger.info(f"[KEMAHASISWAAN] Tabel delegasi terdeteksi dari <td>: {'YA' if is_delegasi else 'TIDAK'}")
+    
+    if not is_delegasi:
+        logger.info("[KEMAHASISWAAN] <td> ditemukan tetapi bukan tabel delegasi. Menggunakan teks asli.")
+        return content_element.get_text(separator="\n", strip=True), False
+    
+    # Format delegasi table
+    formatted_table = _format_delegasi_table(cells)
+    
+    if not formatted_table:
+        logger.warning("[KEMAHASISWAAN] <td> ditemukan tetapi gagal diformat sebagai tabel delegasi. Menggunakan teks asli.")
+        return content_element.get_text(separator="\n", strip=True), False
+    
+    # Get text before and after table
+    # Clone element untuk manipulasi
+    import copy
+    content_copy = copy.copy(content_element)
+    
+    # Remove table from copy untuk ambil teks paragraf
+    for table in content_copy.find_all("table"):
+        table.decompose()
+    
+    paragraphs = content_copy.get_text(separator="\n", strip=True)
+    
+    # Combine: paragraf + formatted table
+    if paragraphs:
+        result = paragraphs + "\n\n" + formatted_table
+    else:
+        result = formatted_table
+    
+    return result, True
 
 
 def _is_social_share_link(href: str, judul: str) -> bool:
@@ -182,14 +411,21 @@ def _parse_detail_html(html: str, item: dict):
     if auth_el:
         item["author"] = auth_el.get_text(strip=True)
 
-    # Isi: .ck-content
+    # Isi: .ck-content - dengan special handling untuk tabel delegasi
     isi_el = (
         soup.find(class_="ck-content")
         or soup.find(class_="entry-content")
         or soup.find("article")
     )
     if isi_el:
-        item["isi"] = isi_el.get_text(strip=True)[:500]
+        # Process content with table detection
+        processed_text, has_table = _process_content_with_table(isi_el)
+        item["isi"] = processed_text
+        
+        if has_table:
+            logger.info("[KEMAHASISWAAN] Tabel delegasi berhasil diformat")
+    else:
+        item["isi"] = ""
 
     # File
     file_a = soup.find("a", href=re.compile(r"\.pdf|download|unduh"))

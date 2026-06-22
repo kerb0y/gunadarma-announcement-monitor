@@ -211,9 +211,10 @@ def scrape_studentsite(limit: Optional[int] = None) -> List[Dict]:
                             dpage.wait_for_timeout(2000)
                             
                             # Ambil isi dari .content-box-wrapper
+                            # Gunakan inner_text() untuk mempertahankan newline
                             isi_wrapper = dpage.query_selector(".content-box-wrapper")
                             if isi_wrapper:
-                                item["isi"] = isi_wrapper.inner_text().strip()[:500]
+                                item["isi"] = isi_wrapper.inner_text().strip()
                             
                             # Link eksternal di dalam konten → file_url
                             ext_links = dpage.query_selector_all("a[href^='http']")

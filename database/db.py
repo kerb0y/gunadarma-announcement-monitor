@@ -84,6 +84,7 @@ def init_db() -> bool:
             author      VARCHAR(255) DEFAULT '',
             file_url    VARCHAR(500) DEFAULT '',
             created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            notified_at TIMESTAMP NULL DEFAULT NULL,
             UNIQUE KEY uq_link_sumber (link(450), sumber)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
         """
@@ -91,9 +92,10 @@ def init_db() -> bool:
         conn.commit()
 
         # Safe migration: tambahkan kolom baru jika tabel sudah ada sebelumnya
-        _tambah_kolom_jika_belum_ada(cursor, "pengumuman", "isi",      "TEXT DEFAULT NULL")
-        _tambah_kolom_jika_belum_ada(cursor, "pengumuman", "author",   "VARCHAR(255) DEFAULT ''")
-        _tambah_kolom_jika_belum_ada(cursor, "pengumuman", "file_url", "VARCHAR(500) DEFAULT ''")
+        _tambah_kolom_jika_belum_ada(cursor, "pengumuman", "isi",         "TEXT DEFAULT NULL")
+        _tambah_kolom_jika_belum_ada(cursor, "pengumuman", "author",      "VARCHAR(255) DEFAULT ''")
+        _tambah_kolom_jika_belum_ada(cursor, "pengumuman", "file_url",    "VARCHAR(500) DEFAULT ''")
+        _tambah_kolom_jika_belum_ada(cursor, "pengumuman", "notified_at", "TIMESTAMP NULL DEFAULT NULL")
         conn.commit()
 
         logger.info("Database dan tabel berhasil diinisialisasi.")
@@ -233,3 +235,62 @@ def simpan_banyak_pengumuman(list_pengumuman: List[Dict]) -> Dict[str, int]:
     )
     
     return stats
+
+
+def mark_as_notified(link: str, sumber: str) -> bool:
+    """
+    Tandai pengumuman sebagai sudah dikirim ke Discord.
+    
+    Args:
+        link: Link pengumuman
+        sumber: Sumber pengumuman
+        
+    Returns:
+        True jika berhasil, False jika gagal
+    """
+    conn = get_connection()
+    if not conn:
+        return False
+    
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE pengumuman SET notified_at = NOW() "
+            "WHERE link = %s AND sumber = %s",
+            (link, sumber)
+        )
+        conn.commit()
+        return cursor.rowcount > 0
+    except Error as e:
+        logger.error(f"Gagal mark notified: {e}")
+        conn.rollback()
+        return False
+    finally:
+        cursor.close()
+        conn.close()
+
+
+def get_unnotified_pengumuman() -> List[Dict]:
+    """
+    Ambil semua pengumuman yang belum pernah dikirim ke Discord.
+    
+    Returns:
+        List pengumuman yang belum notified
+    """
+    conn = get_connection()
+    if not conn:
+        return []
+    
+    try:
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute(
+            "SELECT * FROM pengumuman WHERE notified_at IS NULL ORDER BY created_at DESC"
+        )
+        results = cursor.fetchall()
+        return results
+    except Error as e:
+        logger.error(f"Gagal get unnotified: {e}")
+        return []
+    finally:
+        cursor.close()
+        conn.close()
