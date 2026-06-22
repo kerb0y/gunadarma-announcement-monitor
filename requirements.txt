@@ -1,0 +1,20 @@
+# requirements.txt
+# Dependensi Python untuk Sistem Agregasi Pengumuman Universitas Gunadarma
+
+# Headless browser untuk scraping
+playwright==1.44.0
+
+# Stealth mode untuk bypass Cloudflare bot detection
+playwright-stealth==2.0.3
+
+# HTML parser untuk scraping via FlareSolverr response
+beautifulsoup4==4.12.3
+
+# Koneksi MySQL
+mysql-connector-python==8.3.0
+
+# HTTP requests (untuk Discord webhook dan FlareSolverr)
+requests==2.32.3
+
+# Membaca file .env
+python-dotenv==1.0.1

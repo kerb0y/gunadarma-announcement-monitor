@@ -1,0 +1,21 @@
+version: "3.8"
+
+# docker-compose.yml
+# Jalankan FlareSolverr untuk bypass Cloudflare Managed Challenge
+#
+# Cara pakai:
+#   docker-compose up -d
+#   docker-compose down
+#
+# Setelah berjalan, FlareSolverr tersedia di http://localhost:8191
+# Scraper akan otomatis mendeteksi dan menggunakannya.
+
+services:
+  flaresolverr:
+    image: ghcr.io/flaresolverr/flaresolverr:latest
+    container_name: flaresolverr
+    environment:
+      - LOG_LEVEL=info
+    ports:
+      - "8191:8191"
+    restart: unless-stopped
