@@ -69,6 +69,8 @@ def init_db() -> bool:
             f"CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
         )
         cursor.execute(f"USE `{config.DB_NAME}`")
+        
+        logger.info(f"[DB] Database aktif: {config.DB_NAME}")
 
         # Buat tabel pengumuman dengan semua kolom
         create_table_sql = """
@@ -131,27 +133,37 @@ def cek_duplikat(link: str, sumber: str) -> bool:
         conn.close()
 
 
-def simpan_pengumuman(pengumuman: Dict) -> bool:
+def simpan_pengumuman(pengumuman: Dict) -> str:
     """
-    Menyimpan satu pengumuman ke database MySQL (INSERT IGNORE untuk duplikat).
+    Menyimpan satu pengumuman ke database MySQL dengan UPSERT.
+    Jika data dengan (link, sumber) sudah ada, akan di-update.
 
     Args:
         pengumuman: Dict dengan key: judul, tanggal, link, sumber,
                     isi, author, file_url.
 
     Returns:
-        True jika data baru berhasil disimpan, False jika duplikat atau gagal.
+        "insert" jika data baru berhasil disimpan (INSERT),
+        "update" jika data di-update,
+        "unchanged" jika tidak ada perubahan,
+        "error" jika gagal.
     """
     conn = get_connection()
     if not conn:
-        return False
+        return "error"
 
     try:
         cursor = conn.cursor()
         query = """
-        INSERT IGNORE INTO pengumuman
+        INSERT INTO pengumuman
             (judul, tanggal, link, sumber, isi, author, file_url)
         VALUES (%s, %s, %s, %s, %s, %s, %s)
+        ON DUPLICATE KEY UPDATE
+            judul = VALUES(judul),
+            tanggal = VALUES(tanggal),
+            isi = VALUES(isi),
+            author = VALUES(author),
+            file_url = VALUES(file_url)
         """
         values = (
             pengumuman.get("judul",    "") or "",
@@ -164,26 +176,60 @@ def simpan_pengumuman(pengumuman: Dict) -> bool:
         )
         cursor.execute(query, values)
         conn.commit()
-        return cursor.rowcount > 0
+        
+        # rowcount == 1 berarti INSERT baru (data benar-benar baru)
+        # rowcount == 2 berarti UPDATE (data lama di-update)
+        # rowcount == 0 berarti tidak ada perubahan
+        judul_short = pengumuman.get("judul", "")[:60]
+        
+        if cursor.rowcount == 1:
+            logger.info(f"[DB] INSERT baru: {judul_short}")
+            return "insert"
+        elif cursor.rowcount == 2:
+            logger.info(f"[DB] UPDATE data lama: {judul_short}")
+            return "update"
+        else:
+            logger.info(f"[DB] Tidak berubah: {judul_short}")
+            return "unchanged"
 
     except Error as e:
         logger.error(f"Gagal menyimpan pengumuman ke database: {e}")
         conn.rollback()
-        return False
+        return "error"
     finally:
         cursor.close()
         conn.close()
 
 
-def simpan_banyak_pengumuman(list_pengumuman: List[Dict]) -> int:
+def simpan_banyak_pengumuman(list_pengumuman: List[Dict]) -> Dict[str, int]:
     """
     Menyimpan banyak pengumuman sekaligus ke database.
 
     Returns:
-        Jumlah pengumuman baru yang berhasil disimpan.
+        Dict dengan key: insert, update, unchanged, error (jumlah masing-masing)
     """
-    jumlah_baru = 0
+    stats = {
+        "insert": 0,
+        "update": 0,
+        "unchanged": 0,
+        "error": 0,
+    }
+    
+    if not list_pengumuman:
+        return stats
+    
+    sumber = list_pengumuman[0].get("sumber", "UNKNOWN")
+    logger.info(f"[DB] Mulai simpan data {sumber}: {len(list_pengumuman)} item")
+    
     for pengumuman in list_pengumuman:
-        if simpan_pengumuman(pengumuman):
-            jumlah_baru += 1
-    return jumlah_baru
+        result = simpan_pengumuman(pengumuman)
+        stats[result] += 1
+    
+    logger.info(
+        f"[DB] Selesai simpan {sumber}. "
+        f"Insert: {stats['insert']}, "
+        f"Update: {stats['update']}, "
+        f"Tidak berubah: {stats['unchanged']}"
+    )
+    
+    return stats

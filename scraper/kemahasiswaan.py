@@ -29,6 +29,46 @@ BASE_URL        = "https://kemahasiswaan.gunadarma.ac.id"
 DEBUG_HTML_FILE = "debug_kemahasiswaan.html"
 
 
+def _is_social_share_link(href: str, judul: str) -> bool:
+    """
+    Filter link social media share dan link yang tidak valid.
+    Returns True jika harus di-skip.
+    """
+    href_lower = href.lower()
+    judul_lower = judul.lower()
+    
+    # Skip berdasarkan href
+    skip_patterns = [
+        "facebook.com",
+        "whatsapp.com",
+        "twitter.com",
+        "linkedin.com",
+        "sharer.php",
+        "api.whatsapp.com",
+    ]
+    for pattern in skip_patterns:
+        if pattern in href_lower:
+            return True
+    
+    # Skip jika href hanya "#"
+    if href.strip() == "#" or href.strip() == BASE_URL + "/#":
+        return True
+    
+    # Skip berdasarkan judul
+    skip_titles = [
+        "facebook",
+        "whatsapp",
+        "share",
+        "share buttons",
+        "share on",
+    ]
+    for pattern in skip_titles:
+        if pattern in judul_lower:
+            return True
+    
+    return False
+
+
 def _abs(href: str) -> str:
     if not href:
         return ""
@@ -53,6 +93,11 @@ def _parse_list_html(html: str) -> List[tuple]:
         for a in targets:
             href  = _abs(a.get("href", ""))
             judul = (a.get("title") or a.get_text()).strip()
+            
+            # Filter social media share links
+            if _is_social_share_link(href, judul):
+                continue
+            
             if not href or href in seen or not judul or len(judul) < 5:
                 continue
             if "kemahasiswaan.gunadarma.ac.id" not in href:
@@ -67,6 +112,11 @@ def _parse_list_html(html: str) -> List[tuple]:
         for a in div.find_all("a"):
             href  = _abs(a.get("href", ""))
             judul = (a.get("title") or a.get_text()).strip()
+            
+            # Filter social media share links
+            if _is_social_share_link(href, judul):
+                continue
+            
             if not href or href in seen or not judul or len(judul) < 5:
                 continue
             if "kemahasiswaan.gunadarma.ac.id" not in href:
@@ -79,6 +129,11 @@ def _parse_list_html(html: str) -> List[tuple]:
         for a in soup.find_all("a", href=True):
             href  = _abs(a["href"])
             judul = (a.get("title") or a.get_text()).strip()
+            
+            # Filter social media share links
+            if _is_social_share_link(href, judul):
+                continue
+            
             if not href or href in seen or not judul or len(judul) < 10:
                 continue
             if "kemahasiswaan.gunadarma.ac.id" not in href:
@@ -106,20 +161,26 @@ def _parse_detail_html(html: str, item: dict):
         if t:
             item["judul"] = t
 
-    # Author + tanggal: .author-name.font-weight-bold
-    auth_el = soup.find(class_=re.compile(r"author-name.*font-weight-bold|author-name"))
-    if auth_el:
-        raw = auth_el.get_text(strip=True)
-        item["author"] = raw
+    # Tanggal: .mr-10 (selector yang benar sesuai user)
+    tgl_el = soup.find(class_="mr-10")
+    if tgl_el:
+        raw = tgl_el.get_text(strip=True)
+        item["tanggal"] = raw
+        # Coba extract format tanggal jika ada
         match = re.search(r"(\d{1,2}\s+\w+\s+\d{4}|\d{4}-\d{2}-\d{2})", raw)
         if match:
             item["tanggal"] = match.group(0)
 
-    # Tanggal alternatif
+    # Tanggal alternatif jika .mr-10 tidak ada
     if not item["tanggal"]:
-        tgl_el = soup.find("time")
-        if tgl_el:
-            item["tanggal"] = tgl_el.get("datetime", tgl_el.get_text(strip=True))
+        tgl_alt = soup.find("time")
+        if tgl_alt:
+            item["tanggal"] = tgl_alt.get("datetime", tgl_alt.get_text(strip=True))
+
+    # Author: .author-name.font-weight-bold
+    auth_el = soup.find(class_=re.compile(r"author-name.*font-weight-bold|author-name"))
+    if auth_el:
+        item["author"] = auth_el.get_text(strip=True)
 
     # Isi: .ck-content
     isi_el = (

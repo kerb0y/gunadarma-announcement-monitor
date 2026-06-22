@@ -84,9 +84,11 @@ def _parse_list_html(html: str) -> List[tuple]:
     return link_data
 
 
-def _parse_detail_html(html: str, item: dict):
+def _parse_detail_html(html: str, item: dict, detail_url: str = ""):
     """Parse HTML halaman detail BAAK dan lengkapi field item."""
     soup = BeautifulSoup(html, "html.parser")
+    
+    logger.info(f"[BAAK] Detail URL: {detail_url}")
 
     # Judul
     h3 = soup.find("h3", class_=re.compile("text-bold"))
@@ -95,28 +97,61 @@ def _parse_detail_html(html: str, item: dict):
         if t:
             item["judul"] = t
 
-    # Tanggal
+    # Tanggal: .text-middle.inset-left-10.text-italic.text-black
     tgl = soup.find(class_=re.compile(
-        r"text-italic.*text-black|text-black.*text-italic"
+        r"text-middle.*inset-left-10.*text-italic.*text-black"
     ))
     if tgl:
         item["tanggal"] = tgl.get_text(strip=True)
 
-    # Author
+    # Author: .text-middle.inset-left-10.text-italic.text-primary
     auth = soup.find(class_=re.compile(
-        r"text-italic.*text-primary|text-primary.*text-italic"
+        r"text-middle.*inset-left-10.*text-italic.*text-primary"
     ))
     if auth:
         item["author"] = auth.get_text(strip=True)
 
-    # Isi
-    isi_el = (
-        soup.find("div", class_="offset-md-top-20")
-        or soup.find(class_=re.compile(r"cell-sm-8.*cell-md-8.*text-left"))
-        or soup.find(class_="post-content")
-    )
+    # Isi: div[class='offset-md-top-20'] yang berisi konten (bukan metadata)
+    # Ada 2 div dengan class ini: pertama untuk metadata, kedua untuk isi
+    isi_divs = soup.find_all("div", class_="offset-md-top-20")
+    isi_el = None
+    
+    if len(isi_divs) >= 2:
+        # Ambil div kedua (index 1) yang berisi isi berita
+        isi_el = isi_divs[1]
+        logger.info("[BAAK] Selector isi ditemukan: YA (div ke-2)")
+    elif len(isi_divs) == 1:
+        # Jika hanya ada 1, cek apakah berisi metadata atau isi
+        first_div = isi_divs[0]
+        # Jika berisi <ul> atau <li>, kemungkinan metadata
+        if first_div.find("ul") or first_div.find("li"):
+            logger.warning("[BAAK] Hanya ada 1 div offset-md-top-20, sepertinya metadata")
+        else:
+            isi_el = first_div
+            logger.info("[BAAK] Selector isi ditemukan: YA (div ke-1)")
+    
     if isi_el:
-        item["isi"] = isi_el.get_text(strip=True)[:500]
+        # Ambil semua teks dari div
+        isi_text = isi_el.get_text(separator=" ", strip=True)
+        
+        # Bersihkan whitespace berlebih
+        isi_text = " ".join(isi_text.split())
+        
+        logger.info(f"[BAAK] Panjang isi: {len(isi_text)} karakter")
+        
+        if isi_text:
+            logger.info(f"[BAAK] Preview isi: {isi_text[:150]}...")
+            item["isi"] = isi_text[:500]
+        else:
+            logger.warning("[BAAK] Isi kosong setelah ekstraksi teks")
+            item["isi"] = ""
+    else:
+        logger.warning("[BAAK] Selector isi ditemukan: TIDAK")
+        item["isi"] = ""
+        # Simpan debug HTML
+        with open("debug_baak_detail.html", "w", encoding="utf-8") as f:
+            f.write(html)
+        logger.warning(f"[BAAK] Debug HTML disimpan ke: {os.path.abspath('debug_baak_detail.html')}")
 
     # File
     file_a = soup.find("a", href=re.compile(r"\.pdf|download|unduh"))
@@ -150,30 +185,26 @@ def _scrape_dengan_flaresolverr(limit: Optional[int]) -> List[Dict]:
     for judul_list, href, tanggal_list, isi_list in link_data:
         item = {
             "judul"   : judul_list,
-            "tanggal" : tanggal_list or "Tidak tersedia",
+            "tanggal" : "",
             "link"    : href,
             "sumber"  : SUMBER,
-            "isi"     : isi_list,
+            "isi"     : "",
             "author"  : "",
             "file_url": "",
         }
-        # OPTIMISASI: Hanya ambil detail jika isi kosong atau sangat pendek
-        # Ini mengurangi request FlareSolverr dan menghemat waktu
-        if not item["isi"] or len(item["isi"]) < 50:
-            # Jeda singkat sebelum request berikutnya
-            time.sleep(3)
-            detail_html = get_html_via_flaresolverr(href)
-            if detail_html:
-                _parse_detail_html(detail_html, item)
-                logger.info(f"[BAAK] OK (detail): {item['judul'][:60]}")
-            else:
-                logger.warning(f"[BAAK] Gagal detail, pakai data list: {href}")
-                # Jika isi masih kosong, beri placeholder
-                if not item["isi"]:
-                    item["isi"] = "Tidak tersedia"
+        # WAJIB ambil detail page untuk BAAK (tanggal, author, isi dari selector yang benar)
+        time.sleep(3)
+        detail_html = get_html_via_flaresolverr(href)
+        if detail_html:
+            _parse_detail_html(detail_html, item, detail_url=href)
+            logger.info(f"[BAAK] OK (detail): {item['judul'][:60]}")
         else:
-            # Data dari list sudah cukup
-            logger.info(f"[BAAK] OK (list): {item['judul'][:60]}")
+            logger.warning(f"[BAAK] Gagal detail: {href}")
+            # Jika gagal, kosongkan atau beri placeholder
+            if not item["isi"]:
+                item["isi"] = "Tidak tersedia"
+            if not item["tanggal"]:
+                item["tanggal"] = "Tidak tersedia"
         hasil.append(item)
 
     return hasil
@@ -259,25 +290,20 @@ def _scrape_dengan_playwright(limit: Optional[int]) -> List[Dict]:
             for judul_list, href, tanggal_list, isi_list in link_data:
                 item = {
                     "judul"   : judul_list,
-                    "tanggal" : tanggal_list or "Tidak tersedia",
+                    "tanggal" : "",
                     "link"    : href,
                     "sumber"  : SUMBER,
-                    "isi"     : isi_list,
+                    "isi"     : "",
                     "author"  : "",
                     "file_url": "",
                 }
-                # OPTIMISASI: Skip detail jika isi sudah cukup dari list
-                if item["isi"] and len(item["isi"]) >= 50:
-                    logger.info(f"[BAAK] OK (list): {item['judul'][:60]}")
-                    hasil.append(item)
-                    continue
-                    
+                # WAJIB ambil detail page untuk BAAK (tanggal, author, isi dari selector yang benar)
                 try:
                     dpage = ctx.new_page()
                     dpage.goto(href, timeout=25000, wait_until="domcontentloaded")
                     _wait_cloudflare(dpage, max_wait=12000)
                     dpage.wait_for_timeout(800)
-                    _parse_detail_html(dpage.content(), item)
+                    _parse_detail_html(dpage.content(), item, detail_url=href)
                     dpage.close()
                     logger.info(f"[BAAK] OK (detail): {item['judul'][:60]}")
                 except Exception as e:
@@ -289,6 +315,8 @@ def _scrape_dengan_playwright(limit: Optional[int]) -> List[Dict]:
                     # Jika isi masih kosong, beri placeholder
                     if not item["isi"]:
                         item["isi"] = "Tidak tersedia"
+                    if not item["tanggal"]:
+                        item["tanggal"] = "Tidak tersedia"
                 hasil.append(item)
 
             browser.close()

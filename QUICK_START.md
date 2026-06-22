@@ -1,7 +1,180 @@
 # Quick Start - Sistem Agregasi Pengumuman
 
-**Last Update:** 22 Juni 2026, 12:55 PM  
-**Status:** ✅ READY FOR DEMO
+**Last Update:** 22 Juni 2026, 13:30 PM  
+**Status:** ✅ READY FOR CONFIGURATION
+
+---
+
+## 📌 Langkah Konfigurasi (WAJIB DIBACA)
+
+### 1️⃣ Setup File .env
+
+File `.env` sudah dibuat otomatis. Anda perlu mengisi konfigurasi berikut:
+
+```bash
+# Lihat file .env
+notepad .env
+```
+
+**Konfigurasi yang WAJIB diisi:**
+
+#### **A. Database MySQL**
+
+```env
+DB_HOST=localhost
+DB_PORT=3306
+DB_USER=root
+DB_PASSWORD=GANTI_DENGAN_PASSWORD_MYSQL_ANDA
+DB_NAME=agregasi_pengumuman
+```
+
+**Cara cek password MySQL:**
+
+**Jika pakai Laragon:**
+- Buka Laragon → Menu → MySQL → MySQL Console
+- Password akan ditampilkan (atau kosong jika default)
+- Atau cek di: Laragon → Menu → Tools → Quick Add → Configuration
+
+**Jika pakai XAMPP:**
+- Biasanya password root adalah **kosong** (hapus teks setelah `DB_PASSWORD=`)
+- Atau coba password: `root` atau yang Anda set saat install
+
+**Test koneksi MySQL:**
+```bash
+python -c "import mysql.connector; conn = mysql.connector.connect(host='localhost', user='root', password='PASSWORD_ANDA'); print('MySQL OK' if conn.is_connected() else 'Gagal'); conn.close()"
+```
+
+Ganti `PASSWORD_ANDA` dengan password MySQL Anda.
+
+#### **B. Discord Webhook (Opsional untuk Testing)**
+
+```env
+DISCORD_WEBHOOK_URL=
+```
+
+**Cara mendapatkan Discord Webhook:**
+
+1. Buka Discord → pilih Server → klik Settings (⚙️) di samping nama channel
+2. Pilih **Integrations** → **Webhooks** → **New Webhook**
+3. Beri nama (misal: "Pengumuman UG Bot")
+4. Pilih channel tujuan → **Copy Webhook URL**
+5. Paste di `.env`:
+   ```env
+   DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/1234567890/AbCdEfGhIjKlMnOpQrStUvWxYz
+   ```
+
+**Catatan:** Jika `DISCORD_WEBHOOK_URL` kosong, sistem akan skip notifikasi Discord dan hanya simpan ke database. Tidak akan crash.
+
+#### **C. Konfigurasi Testing (Sudah diatur untuk development)**
+
+```env
+MONITORING_INTERVAL_MINUTES=1
+INITIAL_SCRAPE_LIMIT=1
+DEBUG_MODE=true
+```
+
+**Penjelasan:**
+- `MONITORING_INTERVAL_MINUTES=1` → Monitoring setiap 1 menit (untuk testing)
+- `INITIAL_SCRAPE_LIMIT=1` → Ambil 1 data saja saat awal (cepat untuk testing)
+- `DEBUG_MODE=true` → Tampilkan log lengkap di console
+
+**Untuk Production/Demo Final:**
+```env
+MONITORING_INTERVAL_MINUTES=60
+INITIAL_SCRAPE_LIMIT=5
+DEBUG_MODE=false
+```
+
+---
+
+### 2️⃣ Setup MySQL Database
+
+Database akan dibuat **otomatis** saat pertama kali menjalankan `python main.py`.
+
+**Yang dilakukan otomatis:**
+1. ✅ Buat database `agregasi_pengumuman` (jika belum ada)
+2. ✅ Buat tabel `pengumuman` dengan kolom:
+   - `id` (Primary Key, Auto Increment)
+   - `judul` (TEXT, NOT NULL)
+   - `tanggal` (VARCHAR 100)
+   - `link` (VARCHAR 500, NOT NULL)
+   - `sumber` (VARCHAR 100, NOT NULL)
+   - `isi` (TEXT, konten detail pengumuman)
+   - `author` (VARCHAR 255, penulis/pembuat pengumuman)
+   - `file_url` (VARCHAR 500, link file PDF/attachment)
+   - `created_at` (TIMESTAMP, waktu insert)
+3. ✅ Tambah **UNIQUE constraint** pada `(link, sumber)` → Mencegah duplikasi
+
+**Jika ingin membuat database secara manual:**
+
+```sql
+CREATE DATABASE IF NOT EXISTS agregasi_pengumuman 
+CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+USE agregasi_pengumuman;
+
+CREATE TABLE IF NOT EXISTS pengumuman (
+    id          INT AUTO_INCREMENT PRIMARY KEY,
+    judul       TEXT NOT NULL,
+    tanggal     VARCHAR(100) DEFAULT '',
+    link        VARCHAR(500) NOT NULL,
+    sumber      VARCHAR(100) NOT NULL,
+    isi         TEXT DEFAULT NULL,
+    author      VARCHAR(255) DEFAULT '',
+    file_url    VARCHAR(500) DEFAULT '',
+    created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_link_sumber (link(450), sumber)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+```
+
+---
+
+### 3️⃣ Setup FlareSolverr (Docker)
+
+FlareSolverr diperlukan untuk bypass **Cloudflare protection** di website BAAK dan Kemahasiswaan.
+
+**Jalankan FlareSolverr:**
+```bash
+docker run -d --name flaresolverr -p 8191:8191 ghcr.io/flaresolverr/flaresolverr:latest
+```
+
+**Cek status:**
+```bash
+docker ps | findstr flaresolverr
+```
+
+**Expected output:**
+```
+CONTAINER ID   IMAGE                    STATUS          PORTS
+abc123def456   flaresolverr:latest      Up 2 minutes    0.0.0.0:8191->8191/tcp
+```
+
+**Test FlareSolverr:**
+```bash
+curl http://localhost:8191/health
+```
+**Expected:** `{"status": "ok"}`
+
+---
+
+### 4️⃣ Validasi Konfigurasi
+
+Sebelum menjalankan sistem, pastikan:
+
+✅ File `.env` sudah diisi dengan benar  
+✅ MySQL berjalan dan password benar  
+✅ FlareSolverr berjalan di port 8191  
+✅ Python dependencies sudah terinstall (`pip install -r requirements.txt`)
+
+**Test koneksi MySQL:**
+```bash
+python -c "import mysql.connector; conn = mysql.connector.connect(host='localhost', user='root', password='PASSWORD_ANDA'); print('✅ MySQL OK'); conn.close()"
+```
+
+**Test FlareSolverr:**
+```bash
+python -c "import requests; r = requests.get('http://localhost:8191/health'); print('✅ FlareSolverr OK' if r.json().get('status') == 'ok' else '❌ Error')"
+```
 
 ---
 

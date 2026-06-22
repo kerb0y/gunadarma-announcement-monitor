@@ -133,6 +133,8 @@ def scrape_studentsite(limit: Optional[int] = None) -> List[Dict]:
             if limit:
                 boxes = boxes[:limit]
 
+            logger.info(f"[STUDENTSITE] Akan membuka {len(boxes)} halaman detail...")
+            
             for box in boxes:
                 item = {
                     "judul"   : "",
@@ -186,13 +188,6 @@ def scrape_studentsite(limit: Optional[int] = None) -> List[Dict]:
                         elif raw:
                             item["tanggal"] = raw[:50]
 
-                    # Isi dari paragraf
-                    isi_el = box.query_selector(
-                        "p, div.content-box-body, div.content-box-content"
-                    )
-                    if isi_el:
-                        item["isi"] = isi_el.inner_text().strip()[:300]
-
                     # Jika link masih homepage, cari link detail internal di dalam box
                     if item["link"] in [URL, BASE_URL, BASE_URL + "/"]:
                         detail_el = box.query_selector(
@@ -205,20 +200,41 @@ def scrape_studentsite(limit: Optional[int] = None) -> List[Dict]:
                             if d_href:
                                 item["link"] = _abs(d_href)
 
-                    # Link eksternal di dalam konten → file_url
-                    # (misalnya link ke lsp.gunadarma.ac.id atau situs lain)
-                    ext_links = box.query_selector_all("a[href^='http']")
-                    for ext_el in ext_links:
-                        ext_href = ext_el.get_attribute("href") or ""
-                        if ext_href and "studentsite.gunadarma.ac.id" not in ext_href:
-                            if ext_href != item["link"]:
-                                item["file_url"] = ext_href
-                                break  # Ambil yang pertama
-
                     if not item["judul"]:
                         continue
 
-                    logger.info(f"[STUDENTSITE] OK: {item['judul'][:60]!r}")
+                    # WAJIB buka halaman detail untuk ambil isi dari .content-box-wrapper
+                    if item["link"] not in [URL, BASE_URL, BASE_URL + "/"]:
+                        try:
+                            dpage = ctx.new_page()
+                            dpage.goto(item["link"], timeout=30000, wait_until="domcontentloaded")
+                            dpage.wait_for_timeout(2000)
+                            
+                            # Ambil isi dari .content-box-wrapper
+                            isi_wrapper = dpage.query_selector(".content-box-wrapper")
+                            if isi_wrapper:
+                                item["isi"] = isi_wrapper.inner_text().strip()[:500]
+                            
+                            # Link eksternal di dalam konten → file_url
+                            ext_links = dpage.query_selector_all("a[href^='http']")
+                            for ext_el in ext_links:
+                                ext_href = ext_el.get_attribute("href") or ""
+                                if ext_href and "studentsite.gunadarma.ac.id" not in ext_href:
+                                    if ext_href != item["link"]:
+                                        item["file_url"] = ext_href
+                                        break  # Ambil yang pertama
+                            
+                            dpage.close()
+                            logger.info(f"[STUDENTSITE] OK (detail): {item['judul'][:60]!r}")
+                        except Exception as e:
+                            logger.warning(f"[STUDENTSITE] Gagal buka detail {item['link']}: {e}")
+                            try:
+                                dpage.close()
+                            except Exception:
+                                pass
+                    else:
+                        logger.warning(f"[STUDENTSITE] Link tidak valid, skip: {item['judul'][:60]}")
+                        continue
 
                 except Exception as e:
                     logger.warning(f"[STUDENTSITE] Error proses box: {e}")

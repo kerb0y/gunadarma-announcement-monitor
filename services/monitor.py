@@ -114,15 +114,30 @@ def initial_scraping():
         logger.warning("Initial scraping selesai, tidak ada data ditemukan.")
         return
 
-    jumlah_disimpan = 0
+    total_insert = 0
+    total_update = 0
+    total_unchanged = 0
+    total_error = 0
+    
     for pengumuman in semua_hasil:
-        if simpan_pengumuman(pengumuman):
-            jumlah_disimpan += 1
+        result = simpan_pengumuman(pengumuman)
+        if result == "insert":
+            total_insert += 1
+        elif result == "update":
+            total_update += 1
+        elif result == "unchanged":
+            total_unchanged += 1
+        else:
+            total_error += 1
 
     logger.info("=" * 60)
     logger.info("Initial scraping selesai.")
-    logger.info(f"Total ditemukan : {len(semua_hasil)} pengumuman")
-    logger.info(f"Total disimpan  : {jumlah_disimpan} pengumuman baru ke database")
+    logger.info(f"Total ditemukan  : {len(semua_hasil)} pengumuman")
+    logger.info(f"Total INSERT     : {total_insert} pengumuman baru")
+    logger.info(f"Total UPDATE     : {total_update} pengumuman di-update")
+    logger.info(f"Total UNCHANGED  : {total_unchanged} pengumuman tidak berubah")
+    if total_error > 0:
+        logger.warning(f"Total ERROR      : {total_error} gagal disimpan")
     logger.info("Sistem masuk ke mode monitoring...")
     logger.info("=" * 60)
 
@@ -144,22 +159,30 @@ def siklus_monitoring():
         return
 
     pengumuman_baru = []
+    notif_discord_terkirim = 0
+    
     for pengumuman in semua_hasil:
         link   = pengumuman.get("link",   "")
         sumber = pengumuman.get("sumber", "")
         if not link:
             continue
-        if not cek_duplikat(link, sumber):
-            if simpan_pengumuman(pengumuman):
-                pengumuman_baru.append(pengumuman)
-                logger.info(
-                    f"[NEW] [{sumber}] {pengumuman.get('judul', '')[:80]}"
-                )
+        
+        # Simpan dengan UPSERT
+        result = simpan_pengumuman(pengumuman)
+        
+        # Hanya kirim Discord untuk INSERT baru (bukan UPDATE)
+        if result == "insert":
+            pengumuman_baru.append(pengumuman)
+            logger.info(
+                f"[NEW] [{sumber}] {pengumuman.get('judul', '')[:80]}"
+            )
 
     if pengumuman_baru:
         logger.info(f"Total {len(pengumuman_baru)} pengumuman baru. Kirim notifikasi...")
         for p in pengumuman_baru:
-            kirim_notifikasi_discord(p)
+            if kirim_notifikasi_discord(p):
+                notif_discord_terkirim += 1
+        logger.info(f"Total notifikasi Discord terkirim: {notif_discord_terkirim}")
     else:
         logger.info("Tidak ada pengumuman baru. Menunggu siklus berikutnya.")
 
