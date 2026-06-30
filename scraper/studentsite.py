@@ -114,10 +114,34 @@ def scrape_studentsite(limit: Optional[int] = None) -> List[Dict]:
                     if "pengumuman" not in abs_href and "berita" not in abs_href:
                         continue
                     
+                    # Ambil tanggal dari card (biasanya ada di div terakhir dalam card)
+                    tanggal_card = ""
+                    # Cari div dengan class 'text-gray-400' atau 'text-xs' yang biasa berisi tanggal
+                    date_div = link_el.query_selector("div.text-gray-400, div[class*='text-xs'][class*='text-gray-400']")
+                    if date_div:
+                        text = date_div.inner_text().strip()
+                        # Cek apakah text mengandung pola tanggal Indonesia
+                        # Prioritas 1: "Selasa, 30 Juni 2026" (dengan nama hari)
+                        match = re.search(
+                            r"(Senin|Selasa|Rabu|Kamis|Jumat|Sabtu|Minggu),?\s+\d{1,2}\s+(Januari|Februari|Maret|April|Mei|Juni|Juli|Agustus|September|Oktober|November|Desember)\s+\d{4}",
+                            text
+                        )
+                        if match:
+                            tanggal_card = match.group(0)
+                        else:
+                            # Prioritas 2: "30 Juni 2026" (tanpa nama hari)
+                            match2 = re.search(
+                                r"\d{1,2}\s+(Januari|Februari|Maret|April|Mei|Juni|Juli|Agustus|September|Oktober|November|Desember)\s+\d{4}",
+                                text
+                            )
+                            if match2:
+                                tanggal_card = match2.group(0)
+                    
                     seen.add(abs_href)
                     news_links.append({
                         "judul": judul,
-                        "link": abs_href
+                        "link": abs_href,
+                        "tanggal_card": tanggal_card
                     })
             
             logger.info(f"[STUDENTSITE] Link berita ditemukan: {len(news_links)}")
@@ -144,7 +168,8 @@ def scrape_studentsite(limit: Optional[int] = None) -> List[Dict]:
                     seen.add(abs_href)
                     news_links.append({
                         "judul": judul,
-                        "link": abs_href
+                        "link": abs_href,
+                        "tanggal_card": ""  # Fallback tidak punya tanggal dari card
                     })
                 
                 logger.info(f"[STUDENTSITE] Fallback: {len(news_links)} link ditemukan")
@@ -167,7 +192,7 @@ def scrape_studentsite(limit: Optional[int] = None) -> List[Dict]:
             for news in news_links:
                 item = {
                     "judul"   : news["judul"],
-                    "tanggal" : "",
+                    "tanggal" : news.get("tanggal_card", ""),  # Gunakan tanggal dari card jika ada
                     "link"    : news["link"],
                     "sumber"  : SUMBER,
                     "isi"     : "",
@@ -186,20 +211,51 @@ def scrape_studentsite(limit: Optional[int] = None) -> List[Dict]:
                         if judul_detail:
                             item["judul"] = judul_detail.inner_text().strip()
                     
-                    # Ambil tanggal dari div dengan class khusus
-                    tanggal_el = dpage.query_selector(
-                        "div.flex.items-center.gap-1\\.5.text-sm.text-gray-400, "
-                        "div[class*='flex items-center'], "
-                        "div[class*='text-gray-400']"
-                    )
-                    if tanggal_el:
-                        tanggal_text = tanggal_el.inner_text().strip()
-                        # Extract tanggal jika ada format tanggal
-                        match = re.search(r"(\d{1,2}\s+\w+\s+\d{4}|\d{4}-\d{2}-\d{2}|\d{1,2}/\d{1,2}/\d{4})", tanggal_text)
-                        if match:
-                            item["tanggal"] = match.group(1)
-                        elif tanggal_text:
-                            item["tanggal"] = tanggal_text[:50]
+                    # Ambil tanggal dari detail page jika tanggal card kosong
+                    if not item["tanggal"]:
+                        logger.info(f"[STUDENTSITE] Tanggal card kosong, ambil dari detail page: {item['link']}")
+                        
+                        # Selector tanggal pada detail page
+                        tanggal_el = dpage.query_selector(
+                            "div[class='flex items-center gap-1.5 text-sm text-gray-400 mb-8 pb-6 border-b border-gray-100']"
+                        )
+                        
+                        # Fallback selector jika yang spesifik tidak ditemukan
+                        if not tanggal_el:
+                            tanggal_el = dpage.query_selector(
+                                "div.flex.items-center.gap-1\\.5, "
+                                "div[class*='flex items-center'][class*='text-gray-400'], "
+                                "div[class*='text-gray-400'][class*='mb-8']"
+                            )
+                        
+                        if tanggal_el:
+                            tanggal_text = tanggal_el.inner_text().strip()
+                            
+                            # Bersihkan teks tanggal
+                            # Cari pola tanggal Indonesia: "Senin, 1 Januari 2026" atau "1 Januari 2026"
+                            match = re.search(
+                                r"(Senin|Selasa|Rabu|Kamis|Jumat|Sabtu|Minggu),?\s+\d{1,2}\s+(Januari|Februari|Maret|April|Mei|Juni|Juli|Agustus|September|Oktober|November|Desember)\s+\d{4}",
+                                tanggal_text
+                            )
+                            if match:
+                                item["tanggal"] = match.group(0)
+                            else:
+                                # Coba pola tanggal tanpa nama hari
+                                match2 = re.search(
+                                    r"\d{1,2}\s+(Januari|Februari|Maret|April|Mei|Juni|Juli|Agustus|September|Oktober|November|Desember)\s+\d{4}",
+                                    tanggal_text
+                                )
+                                if match2:
+                                    item["tanggal"] = match2.group(0)
+                                else:
+                                    # Fallback: gunakan teks asli tapi potong jika terlalu panjang
+                                    item["tanggal"] = tanggal_text[:50] if tanggal_text else ""
+                        else:
+                            logger.warning(f"[STUDENTSITE] Tanggal tidak ditemukan di detail page: {item['link']}")
+                    
+                    # Log hasil tanggal
+                    if item["tanggal"]:
+                        logger.info(f"[STUDENTSITE] Tanggal ditemukan: {item['tanggal']}")
                     
                     # Ambil isi dari .prose-content
                     # Gunakan inner_text() untuk mempertahankan newline
