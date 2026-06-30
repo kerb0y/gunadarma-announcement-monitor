@@ -3,24 +3,26 @@ scraper/baak.py
 Scraper untuk website BAAK Universitas Gunadarma.
 URL: https://baak.gunadarma.ac.id/beritabaak
 
-Proteksi: Cloudflare Managed Challenge.
-Strategi utama  : FlareSolverr (jika berjalan di localhost:8191)
-Strategi fallback: Playwright headless (jika FlareSolverr tidak tersedia)
+Alur:
+  1. Buka halaman list: https://baak.gunadarma.ac.id/beritabaak
+  2. Tunggu Cloudflare Managed Challenge selesai (jika muncul)
+  3. Kumpulkan maks. 5 link detail: /beritabaak/<angka>
+  4. Buka setiap halaman detail dan ekstrak:
+       - judul  : h3.text-bold
+       - tanggal: .text-middle.inset-left-10.text-italic.text-black
+       - author : .text-middle.inset-left-10.text-italic.text-primary
+       - isi    : div.offset-md-top-20
+  5. Jika detail gagal → fallback data dari halaman list
 
-Selector aktual (diverifikasi Juni 2026):
-  List  : .cell-md-8 article h6 + a[href*=/beritabaak/]
-  Detail: h3.text-bold (judul), div.offset-md-top-20 (isi),
-          .text-italic.text-black (tanggal), .text-italic.text-primary (author)
+Proteksi: Website dilindungi Cloudflare Managed Challenge.
+          Scraper menunggu challenge selesai hingga 25 detik.
 """
 
 import re
 import os
-import time
 from typing import List, Dict, Optional
-from bs4 import BeautifulSoup
 
 from utils.logger import logger
-from utils.flaresolverr import is_flaresolverr_running, get_html_via_flaresolverr
 
 SUMBER          = "BAAK"
 URL             = "https://baak.gunadarma.ac.id/beritabaak"
@@ -29,6 +31,7 @@ DEBUG_HTML_FILE = "debug_baak.html"
 
 
 def _abs(href: str) -> str:
+    """Normalisasi URL relatif menjadi URL absolut."""
     if not href:
         return ""
     href = href.strip()
@@ -39,236 +42,239 @@ def _abs(href: str) -> str:
     return BASE_URL + "/" + href
 
 
-def _parse_list_html(html: str) -> List[tuple]:
+def _tunggu_cloudflare(page, max_wait_ms: int = 25000):
     """
-    Parse HTML halaman list BAAK.
-    Kembalikan list tuple: (judul, href, tanggal, isi_singkat)
+    Tunggu sampai Cloudflare challenge selesai.
+    Cloudflare menampilkan halaman 'Just a moment...' / 'Tunggu sebentar...'
+    sebelum redirect ke konten asli.
     """
-    soup = BeautifulSoup(html, "html.parser")
-    link_data = []
-    seen = set()
-
-    for a in soup.find_all("a", href=True):
-        href = _abs(a["href"])
-        if not re.search(r"/beritabaak/\d+", href) or href in seen:
-            continue
-        seen.add(href)
-
-        judul   = ""
-        tanggal = ""
-        isi     = ""
-
-        # Cari judul dari h6 di ancestor article atau div post-news
-        ancestor = (
-            a.find_parent("article")
-            or a.find_parent("div", class_=re.compile("post-news"))
-            or a.find_parent("div", class_=re.compile("cell-sm"))
-        )
-        if ancestor:
-            h6 = ancestor.find("h6")
-            if h6:
-                judul = h6.get_text(strip=True)
-            span = ancestor.find("span", class_=re.compile("date|time|tanggal"))
-            if span:
-                tanggal = span.get_text(strip=True)
-            p = ancestor.find("p")
-            if p:
-                isi = p.get_text(strip=True)[:300]
-
-        if not judul:
-            judul = a.get_text(strip=True)
-
-        if judul and len(judul) >= 3:
-            link_data.append((judul, href, tanggal, isi))
-
-    return link_data
-
-
-def _parse_detail_html(html: str, item: dict, detail_url: str = ""):
-    """Parse HTML halaman detail BAAK dan lengkapi field item."""
-    soup = BeautifulSoup(html, "html.parser")
-    
-    logger.info(f"[BAAK] Detail URL: {detail_url}")
-
-    # Judul
-    h3 = soup.find("h3", class_=re.compile("text-bold"))
-    if h3:
-        t = h3.get_text(strip=True)
-        if t:
-            item["judul"] = t
-
-    # Tanggal: .text-middle.inset-left-10.text-italic.text-black
-    tgl = soup.find(class_=re.compile(
-        r"text-middle.*inset-left-10.*text-italic.*text-black"
-    ))
-    if tgl:
-        item["tanggal"] = tgl.get_text(strip=True)
-
-    # Author: .text-middle.inset-left-10.text-italic.text-primary
-    auth = soup.find(class_=re.compile(
-        r"text-middle.*inset-left-10.*text-italic.*text-primary"
-    ))
-    if auth:
-        item["author"] = auth.get_text(strip=True)
-
-    # Isi: Strategi bertingkat dengan fallback
-    isi_text = ""
-    strategy_used = ""
-    
-    # Strategi 1: Cari semua div.offset-md-top-20
-    isi_divs = soup.find_all("div", class_="offset-md-top-20")
-    logger.info(f"[BAAK] Elemen div.offset-md-top-20 ditemukan: {len(isi_divs)}")
-    
-    if len(isi_divs) >= 2:
-        # Ambil div kedua (index 1) yang biasanya berisi isi berita
-        # PENTING: gunakan separator="\n" untuk mempertahankan newline
-        isi_el = isi_divs[1]
-        isi_text = isi_el.get_text(separator="\n", strip=True)
-        strategy_used = "div.offset-md-top-20 ke-2"
-        logger.info(f"[BAAK] Strategi: {strategy_used}")
-        
-    elif len(isi_divs) == 1:
-        # Jika hanya ada 1, cek apakah berisi metadata atau isi
-        first_div = isi_divs[0]
-        # Jika berisi <ul> atau <li>, kemungkinan metadata, skip
-        if first_div.find("ul") or first_div.find("li"):
-            logger.warning("[BAAK] Div offset-md-top-20 berisi metadata (ul/li), skip")
-            isi_text = ""
-        else:
-            isi_text = first_div.get_text(separator="\n", strip=True)
-            strategy_used = "div.offset-md-top-20 ke-1"
-            logger.info(f"[BAAK] Strategi: {strategy_used}")
-    
-    # Fallback 2: Jika isi masih kosong, coba .cell-sm-8.cell-md-8.text-left div.offset-md-top-20
-    if not isi_text:
-        logger.warning("[BAAK] Strategi 1 gagal, coba fallback 2: .cell-sm-8 .cell-md-8 .text-left div.offset-md-top-20")
-        parent = soup.find("div", class_=re.compile(r"cell-sm-8.*cell-md-8.*text-left"))
-        if parent:
-            isi_divs_nested = parent.find_all("div", class_="offset-md-top-20")
-            if len(isi_divs_nested) >= 2:
-                isi_el = isi_divs_nested[1]
-                isi_text = isi_el.get_text(separator="\n", strip=True)
-                strategy_used = "fallback: parent .cell-sm-8 div ke-2"
-                logger.info(f"[BAAK] Strategi: {strategy_used}")
-    
-    # Fallback 3: Jika masih kosong, ambil dari .cell-sm-8.cell-md-8.text-left langsung
-    if not isi_text:
-        logger.warning("[BAAK] Strategi 2 gagal, coba fallback 3: .cell-sm-8 .cell-md-8 .text-left")
-        parent = soup.find("div", class_=re.compile(r"cell-sm-8.*cell-md-8.*text-left"))
-        if parent:
-            # Hapus elemen metadata (h3, ul, li) dulu
-            for tag in parent.find_all(["h3", "ul", "li", "hr"]):
-                tag.decompose()
-            isi_text = parent.get_text(separator="\n", strip=True)
-            strategy_used = "fallback: parent .cell-sm-8 (cleaned)"
-            logger.info(f"[BAAK] Strategi: {strategy_used}")
-    
-    # Validasi: Jangan simpan jika hanya berisi tanggal/author
-    if isi_text:
-        # Filter jika isi HANYA berisi pola tanggal/author (contoh: "15/05/2026 Admin" atau "15/05/2026Admin")
-        # Tapi cek dulu apakah ada newline - jika ada newline berarti bukan cuma tanggal/author
-        if "\n" not in isi_text and re.match(r"^\d{2}/\d{2}/\d{4}\s*\w+$", isi_text):
-            logger.warning(f"[BAAK] Isi hanya berisi tanggal/author: '{isi_text}', dikosongkan")
-            isi_text = ""
-    
-    # Log hasil
-    logger.info(f"[BAAK] Panjang isi: {len(isi_text)} karakter")
-    
-    if isi_text:
-        logger.info(f"[BAAK] Preview isi: {isi_text[:200]}...")
-        item["isi"] = isi_text
-    else:
-        logger.warning("[BAAK] Isi kosong setelah ekstraksi detail page.")
-        item["isi"] = ""
-        # Simpan debug HTML jika isi kosong
-        with open("debug_baak_detail.html", "w", encoding="utf-8") as f:
-            f.write(html)
-        logger.warning(f"[BAAK] Debug HTML disimpan ke: {os.path.abspath('debug_baak_detail.html')}")
-
-    # File
-    file_a = soup.find("a", href=re.compile(r"\.pdf|download|unduh"))
-    if file_a:
-        item["file_url"] = _abs(file_a.get("href", ""))
-
-
-def _scrape_dengan_flaresolverr(limit: Optional[int]) -> List[Dict]:
-    """Scraping menggunakan FlareSolverr."""
-    logger.info("[BAAK] Strategi: FlareSolverr")
-
-    html = get_html_via_flaresolverr(URL)
-    if not html:
-        logger.error("[BAAK] FlareSolverr gagal ambil halaman list.")
-        return []
-
-    logger.info(f"[BAAK] HTML list: {len(html):,} char")
-    link_data = _parse_list_html(html)
-    logger.info(f"[BAAK] Link berita ditemukan: {len(link_data)}")
-
-    if not link_data:
-        with open(DEBUG_HTML_FILE, "w", encoding="utf-8") as f:
-            f.write(html)
-        logger.warning(f"[BAAK] Tidak ada link. Debug: {os.path.abspath(DEBUG_HTML_FILE)}")
-        return []
-
-    if limit:
-        link_data = link_data[:limit]
-
-    hasil = []
-    for judul_list, href, tanggal_list, isi_list in link_data:
-        item = {
-            "judul"   : judul_list,
-            "tanggal" : "",
-            "link"    : href,
-            "sumber"  : SUMBER,
-            "isi"     : "",
-            "author"  : "",
-            "file_url": "",
-        }
-        # WAJIB ambil detail page untuk BAAK (tanggal, author, isi dari selector yang benar)
-        time.sleep(3)
-        detail_html = get_html_via_flaresolverr(href)
-        if detail_html:
-            _parse_detail_html(detail_html, item, detail_url=href)
-            logger.info(f"[BAAK] OK (detail): {item['judul'][:60]}")
-        else:
-            logger.warning(f"[BAAK] Gagal detail: {href}")
-            # Jika gagal, kosongkan atau beri placeholder
-            if not item["isi"]:
-                item["isi"] = "Tidak tersedia"
-            if not item["tanggal"]:
-                item["tanggal"] = "Tidak tersedia"
-        hasil.append(item)
-
-    return hasil
-
-
-def _wait_cloudflare(page, max_wait: int = 20000):
-    """Tunggu sampai Cloudflare challenge selesai."""
     try:
         page.wait_for_function(
             "!document.title.includes('Just a moment') && "
-            "!document.title.includes('Tunggu sebentar')",
-            timeout=max_wait
+            "!document.title.includes('Tunggu sebentar') && "
+            "!document.title.includes('moment...')",
+            timeout=max_wait_ms
         )
-        logger.info(f"[BAAK] Cloudflare selesai. Title: {page.title()}")
+        logger.info(f"[BAAK] Cloudflare selesai. Title: {page.title()!r}")
     except Exception:
-        logger.warning(f"[BAAK] Cloudflare masih aktif setelah {max_wait}ms.")
+        logger.warning(f"[BAAK] Cloudflare belum selesai setelah {max_wait_ms}ms.")
 
 
-def _scrape_dengan_playwright(limit: Optional[int]) -> List[Dict]:
-    """Scraping menggunakan Playwright (fallback)."""
-    logger.info("[BAAK] Strategi: Playwright (fallback)")
+def _masih_cloudflare(page) -> bool:
+    """Cek apakah halaman masih di challenge Cloudflare."""
+    title = page.title()
+    return any(kw in title for kw in ["Just a moment", "Tunggu sebentar", "moment..."])
+
+
+def _ambil_link_dari_list(page) -> List[tuple]:
+    """
+    Ambil semua link berita dari halaman list BAAK.
+    Kembalikan list of (judul_list, href_absolut).
+    """
+    link_data = []
+    seen = set()
+
+    # === Strategi 1: link langsung dengan pola /beritabaak/<angka> ===
+    all_a = page.query_selector_all("a[href]")
+    logger.info(f"[BAAK] Total <a> di halaman list: {len(all_a)}")
+
+    for el in all_a:
+        href = _abs(el.get_attribute("href") or "")
+        if not href or href in seen:
+            continue
+        if not re.search(r"/beritabaak/\d+", href):
+            continue
+
+        # Ambil teks judul dari elemen atau parent terdekat
+        judul = el.inner_text().strip()
+
+        # Jika teks link pendek, cari di parent article/div
+        if not judul or len(judul) < 3:
+            try:
+                # Coba ambil dari h6 terdekat
+                parent_art = el.evaluate_handle(
+                    "el => el.closest('article') || el.closest('.post-news-body') || el.parentElement"
+                )
+                h6_els = page.query_selector_all("article h6, .post-news-body h6")
+                if h6_els:
+                    judul = h6_els[0].inner_text().strip()
+            except Exception:
+                pass
+
+        if not judul:
+            judul = f"Berita BAAK #{len(link_data) + 1}"
+
+        seen.add(href)
+        link_data.append((judul, href))
+
+    # === Strategi 2: selector article h6 jika link tidak ditemukan ===
+    if not link_data:
+        logger.info("[BAAK] Strategi 2: cari article h6 + link...")
+        articles = page.query_selector_all(
+            ".cell-md-8 article, "
+            "div[class*='post-news'] article, "
+            ".range.text-sm-left article, "
+            "div[class*='cell-sm-6'] div[class*='post-news-body']"
+        )
+        logger.info(f"[BAAK] Article ditemukan: {len(articles)}")
+        for art in articles:
+            link_el = art.query_selector("a[href]")
+            h6_el   = art.query_selector("h6")
+            if not link_el:
+                continue
+            href  = _abs(link_el.get_attribute("href") or "")
+            judul = h6_el.inner_text().strip() if h6_el else link_el.inner_text().strip()
+            if href and href not in seen and re.search(r"/beritabaak/\d+", href):
+                seen.add(href)
+                link_data.append((judul or "Berita BAAK", href))
+
+    logger.info(f"[BAAK] Link berita ditemukan: {len(link_data)}")
+    return link_data
+
+
+def _ambil_data_list(page, href: str) -> Dict:
+    """
+    Ambil data fallback dari halaman list (tanpa membuka detail).
+    Gunakan jika halaman detail gagal dibuka.
+    """
+    # Coba ambil deskripsi singkat dari elemen list yang mengandung link ini
+    isi_singkat = ""
+    try:
+        art = page.query_selector(f"article:has(a[href*='{href.split('/')[-1]}'])")
+        if art:
+            p_el = art.query_selector("p")
+            if p_el:
+                isi_singkat = p_el.inner_text().strip()[:300]
+    except Exception:
+        pass
+    return {"isi_fallback": isi_singkat}
+
+
+def _buka_detail(ctx, href: str) -> Optional[Dict]:
+    """
+    Buka halaman detail satu berita BAAK dan ekstrak semua field.
+
+    Returns:
+        Dict dengan judul, tanggal, author, isi — atau None jika gagal.
+    """
+    try:
+        from playwright.sync_api import TimeoutError as PWTimeout
+        dpage = ctx.new_page()
+        logger.info(f"[BAAK] Buka detail: {href}")
+
+        dpage.goto(href, timeout=30000, wait_until="domcontentloaded")
+        _tunggu_cloudflare(dpage, max_wait_ms=15000)
+        dpage.wait_for_timeout(1500)
+
+        if _masih_cloudflare(dpage):
+            logger.warning(f"[BAAK] Detail masih di Cloudflare: {href}")
+            dpage.close()
+            return None
+
+        # ── Judul ───────────────────────────────────────────────────────
+        judul = ""
+        judul_el = dpage.query_selector("h3.text-bold")
+        if judul_el:
+            judul = judul_el.inner_text().strip()
+        if not judul:
+            judul_el2 = dpage.query_selector("h1, h2")
+            if judul_el2:
+                judul = judul_el2.inner_text().strip()
+
+        # ── Tanggal ──────────────────────────────────────────────────────
+        tanggal = ""
+        tgl_el = dpage.query_selector(
+            ".text-middle.inset-left-10.text-italic.text-black, "
+            ".text-italic.text-black, "
+            "time, .post-date, .date"
+        )
+        if tgl_el:
+            tanggal = tgl_el.inner_text().strip()
+
+        # ── Author ───────────────────────────────────────────────────────
+        author = ""
+        auth_el = dpage.query_selector(
+            ".text-middle.inset-left-10.text-italic.text-primary, "
+            ".text-italic.text-primary, "
+            ".author, .posted-by"
+        )
+        if auth_el:
+            author = auth_el.inner_text().strip()
+
+        # ── Isi berita ───────────────────────────────────────────────────
+        isi = ""
+        isi_el = dpage.query_selector(
+            "div.offset-md-top-20, "
+            ".cell-sm-8.cell-md-8.text-left, "
+            ".post-content, "
+            "div[class*='post-body']"
+        )
+        if isi_el:
+            isi = isi_el.inner_text().strip()
+
+        # ── File/link unduhan ────────────────────────────────────────────
+        file_url = ""
+        file_el = dpage.query_selector(
+            "a[href*='.pdf'], "
+            "a[href*='download'], "
+            "a[href*='unduh'], "
+            "a[href*='drive.google']"
+        )
+        if file_el:
+            file_url = _abs(file_el.get_attribute("href") or "")
+
+        dpage.close()
+
+        logger.info(f"[BAAK] OK (detail): {judul[:70]!r}")
+        return {
+            "judul"   : judul,
+            "tanggal" : tanggal,
+            "author"  : author,
+            "isi"     : isi,
+            "file_url": file_url,
+        }
+
+    except Exception as e:
+        logger.warning(f"[BAAK] Detail gagal: {href} → {type(e).__name__}: {e}")
+        try:
+            dpage.close()
+        except Exception:
+            pass
+        return None
+
+
+def scrape_baak(limit: Optional[int] = None) -> List[Dict]:
+    """
+    Scraping berita dari BAAK Gunadarma.
+
+    Alur:
+      1. Buka halaman list, tunggu Cloudflare.
+      2. Kumpulkan link detail /beritabaak/<id>.
+      3. Buka setiap halaman detail → ekstrak judul, tanggal, author, isi.
+      4. Fallback ke data list jika detail gagal.
+
+    Returns:
+        List[Dict] dengan field: judul, tanggal, link, sumber, isi, author, file_url.
+    """
+    logger.info(f"[BAAK] ── Mulai scraping: {URL}")
     hasil = []
     browser = None
 
     try:
+        logger.info("[BAAK] Tahap 1 - Import Playwright...")
         from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
+        logger.info("[BAAK] Playwright OK.")
 
         with sync_playwright() as p:
+            logger.info("[BAAK] Tahap 2 - Launch browser Chromium headless...")
             browser = p.chromium.launch(
                 headless=True,
-                args=["--no-sandbox", "--disable-setuid-sandbox",
-                      "--disable-blink-features=AutomationControlled"]
+                args=[
+                    "--no-sandbox",
+                    "--disable-setuid-sandbox",
+                    "--disable-blink-features=AutomationControlled",
+                    "--disable-dev-shm-usage",
+                ]
             )
             ctx = browser.new_context(
                 user_agent=(
@@ -277,110 +283,105 @@ def _scrape_dengan_playwright(limit: Optional[int]) -> List[Dict]:
                     "Chrome/125.0.0.0 Safari/537.36"
                 ),
                 extra_http_headers={
-                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                    "Accept":          "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
                     "Accept-Language": "id-ID,id;q=0.9,en-US;q=0.8",
                 }
             )
-            page = ctx.new_page()
-            try:
-                from playwright_stealth import Stealth
-                Stealth().apply_stealth_sync(page)
-            except Exception:
-                pass
+            list_page = ctx.new_page()
 
+            # ── Tahap 3: Buka halaman list ────────────────────────────────
+            logger.info(f"[BAAK] Tahap 3 - Buka halaman list: {URL}")
             try:
-                page.goto(URL, timeout=50000, wait_until="domcontentloaded")
-                _wait_cloudflare(page, max_wait=20000)
-                page.wait_for_timeout(1500)
+                list_page.goto(URL, timeout=60000, wait_until="domcontentloaded")
+                logger.info(f"[BAAK] Title awal: {list_page.title()!r}")
+                _tunggu_cloudflare(list_page, max_wait_ms=25000)
+                list_page.wait_for_timeout(2000)
+                logger.info(f"[BAAK] Title akhir : {list_page.title()!r}")
+                logger.info(f"[BAAK] URL akhir   : {list_page.url}")
             except PWTimeout as e:
-                logger.error(f"[BAAK] Timeout buka halaman: {e}")
-                browser.close()
+                logger.error(f"[BAAK] TIMEOUT saat buka list: {e}")
+                browser.close(); browser = None
+                return []
+            except Exception as e:
+                logger.error(f"[BAAK] Error buka list: {type(e).__name__}: {e}")
+                browser.close(); browser = None
                 return []
 
-            html = page.content()
-            title = page.title()
-            if "Just a moment" in title or "Tunggu sebentar" in title:
-                logger.warning("[BAAK] Cloudflare aktif, tidak bisa bypass. Simpan debug HTML.")
+            # Cek masih di Cloudflare?
+            if _masih_cloudflare(list_page):
+                html = list_page.content()
+                logger.warning("[BAAK] Cloudflare Managed Challenge aktif. Tidak bisa bypass.")
+                logger.warning(f"[BAAK] Simpan HTML debug → {os.path.abspath(DEBUG_HTML_FILE)}")
                 with open(DEBUG_HTML_FILE, "w", encoding="utf-8") as f:
                     f.write(html)
-                logger.warning(f"[BAAK] Debug: {os.path.abspath(DEBUG_HTML_FILE)}")
-                browser.close()
+                browser.close(); browser = None
                 return []
 
-            link_data = _parse_list_html(html)
-            logger.info(f"[BAAK] Link berita: {len(link_data)}")
+            html_list = list_page.content()
+            logger.info(f"[BAAK] HTML list: {len(html_list):,} char")
+
+            # ── Tahap 4: Kumpulkan link berita dari halaman list ──────────
+            logger.info("[BAAK] Tahap 4 - Kumpulkan link berita dari halaman list...")
+            link_data = _ambil_link_dari_list(list_page)
+
             if not link_data:
+                logger.warning("[BAAK] Tidak ada link berita ditemukan. Simpan debug HTML.")
                 with open(DEBUG_HTML_FILE, "w", encoding="utf-8") as f:
-                    f.write(html)
-                browser.close()
+                    f.write(html_list)
+                logger.warning(f"[BAAK] Debug: {os.path.abspath(DEBUG_HTML_FILE)}")
+                browser.close(); browser = None
                 return []
 
             if limit:
                 link_data = link_data[:limit]
+                logger.info(f"[BAAK] Dibatasi maks. {limit} berita.")
 
-            # Loop dengan tuple 4 elemen (judul, href, tanggal, isi)
-            for judul_list, href, tanggal_list, isi_list in link_data:
-                item = {
-                    "judul"   : judul_list,
-                    "tanggal" : "",
-                    "link"    : href,
-                    "sumber"  : SUMBER,
-                    "isi"     : "",
-                    "author"  : "",
-                    "file_url": "",
-                }
-                # WAJIB ambil detail page untuk BAAK (tanggal, author, isi dari selector yang benar)
-                try:
-                    dpage = ctx.new_page()
-                    dpage.goto(href, timeout=25000, wait_until="domcontentloaded")
-                    _wait_cloudflare(dpage, max_wait=12000)
-                    dpage.wait_for_timeout(800)
-                    _parse_detail_html(dpage.content(), item, detail_url=href)
-                    dpage.close()
-                    logger.info(f"[BAAK] OK (detail): {item['judul'][:60]}")
-                except Exception as e:
-                    logger.warning(f"[BAAK] Gagal detail {href}: {e}")
-                    try:
-                        dpage.close()
-                    except Exception:
-                        pass
-                    # Jika isi masih kosong, beri placeholder
-                    if not item["isi"]:
-                        item["isi"] = "Tidak tersedia"
-                    if not item["tanggal"]:
-                        item["tanggal"] = "Tidak tersedia"
+            logger.info(f"[BAAK] Akan membuka {len(link_data)} halaman detail...")
+
+            # ── Tahap 5: Buka setiap halaman detail ──────────────────────
+            for judul_list, href in link_data:
+                detail = _buka_detail(ctx, href)
+
+                if detail is not None:
+                    # Data dari halaman detail (lengkap)
+                    item = {
+                        "judul"   : detail["judul"]    or judul_list,
+                        "tanggal" : detail["tanggal"],
+                        "link"    : href,
+                        "sumber"  : SUMBER,
+                        "isi"     : detail["isi"],
+                        "author"  : detail["author"],
+                        "file_url": detail["file_url"],
+                    }
+                else:
+                    # Fallback: data minimal dari halaman list
+                    logger.warning(f"[BAAK] Detail gagal, menggunakan data list: {judul_list[:60]!r}")
+                    fb = _ambil_data_list(list_page, href)
+                    item = {
+                        "judul"   : judul_list,
+                        "tanggal" : "",
+                        "link"    : href,
+                        "sumber"  : SUMBER,
+                        "isi"     : fb.get("isi_fallback", ""),
+                        "author"  : "",
+                        "file_url": "",
+                    }
+
                 hasil.append(item)
 
-            browser.close()
+            list_page.close()
+            browser.close(); browser = None
 
     except Exception as e:
-        logger.error(f"[BAAK] Playwright ERROR: {type(e).__name__}: {e}")
+        logger.error(f"[BAAK] ERROR tidak terduga: {type(e).__name__}: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+    finally:
         if browser:
             try:
                 browser.close()
             except Exception:
                 pass
 
-    return hasil
-
-
-def scrape_baak(limit: Optional[int] = None) -> List[Dict]:
-    logger.info(f"[BAAK] Mulai scraping: {URL}")
-
-    if is_flaresolverr_running():
-        logger.info("[BAAK] FlareSolverr terdeteksi di localhost:8191.")
-        hasil = _scrape_dengan_flaresolverr(limit)
-        if hasil:
-            logger.info(f"[BAAK] Selesai via FlareSolverr. Total: {len(hasil)}")
-            return hasil
-        logger.warning("[BAAK] FlareSolverr gagal, coba Playwright...")
-    else:
-        logger.warning(
-            "[BAAK] FlareSolverr tidak berjalan. "
-            "Jalankan: docker run -d --name flaresolverr -p 8191:8191 "
-            "ghcr.io/flaresolverr/flaresolverr:latest"
-        )
-
-    hasil = _scrape_dengan_playwright(limit)
-    logger.info(f"[BAAK] Selesai via Playwright. Total: {len(hasil)}")
+    logger.info(f"[BAAK] Tahap 6 - Selesai. Total dikembalikan: {len(hasil)}")
     return hasil

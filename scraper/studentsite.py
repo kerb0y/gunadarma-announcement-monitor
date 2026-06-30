@@ -1,14 +1,20 @@
 """
 scraper/studentsite.py
 Scraper untuk website Studentsite Universitas Gunadarma.
-URL: https://studentsite.gunadarma.ac.id/
+URL: https://studentsite.gunadarma.ac.id/v4/pengumuman
 
-Selector aktual (diverifikasi Juni 2026 dari user):
-  List berita: body > div:nth-child(2) > div:nth-child(9)
-  Judul + href: h3.content-box-header a > b > font
-  Tanggal: div.font-gray
-  Isi: paragraf di content-box
-  Link eksternal (di isi): simpan ke file_url
+Update Juni 2026:
+  Interface website berubah ke v4, selector baru:
+  
+  List berita:
+    - Container: .mb-10 (area daftar berita teratas)
+    - Card berita: <a> di dalam container .mb-10
+    - Judul card: h3 di dalam card berita
+  
+  Detail berita:
+    - Judul: h1[class='text-2xl sm:text-3xl font-bold mb-4 leading-snug']
+    - Isi: .prose-content.text-gray-700.leading-relaxed.whitespace-pre-wrap
+    - Tanggal: div[class='flex items-center gap-1.5 text-sm text-gray-400 mb-8 pb-6 border-b border-gray-100']
 """
 
 import re
@@ -18,7 +24,7 @@ from typing import List, Dict, Optional
 from utils.logger import logger
 
 SUMBER          = "STUDENTSITE"
-URL             = "https://studentsite.gunadarma.ac.id/"
+URL             = "https://studentsite.gunadarma.ac.id/v4/pengumuman"
 BASE_URL        = "https://studentsite.gunadarma.ac.id"
 DEBUG_HTML_FILE = "debug_studentsite.html"
 
@@ -68,181 +74,173 @@ def scrape_studentsite(limit: Optional[int] = None) -> List[Dict]:
             html = page.content()
             logger.info(f"[STUDENTSITE] HTML: {len(html):,} char")
 
-            # Strategi 1: div.content-box (selector yang sudah terbukti)
-            logger.info("[STUDENTSITE] Cari div.content-box...")
-            boxes = page.query_selector_all("div.content-box")
-            logger.info(f"[STUDENTSITE] content-box ditemukan: {len(boxes)}")
-
-            # Strategi 2: area berita sesuai user (div ke-9 di div ke-2)
-            if not boxes:
-                logger.info("[STUDENTSITE] Coba area berita div:nth-child(9)...")
-                area = page.query_selector(
-                    "body > div:nth-child(2) > div:nth-child(9)"
-                )
-                if area:
-                    boxes_raw = area.query_selector_all("div")
-                    # Filter hanya yang punya h3 atau judul
-                    boxes = [b for b in boxes_raw if b.query_selector("h3, a[href]")]
-                    logger.info(f"[STUDENTSITE] Dari area div[9]: {len(boxes)} elemen")
-
-            # Strategi 3: fallback cari h3 + link
-            if not boxes:
-                logger.info("[STUDENTSITE] Fallback: cari semua h3 dengan link...")
-                h3_els = page.query_selector_all("h3 a[href]")
-                logger.info(f"[STUDENTSITE] h3 a: {len(h3_els)}")
-
-                seen = set()
-                for el in h3_els:
-                    href  = _abs(el.get_attribute("href") or "")
-                    # Coba ambil teks dari font atau b di dalam link
-                    font_el = el.query_selector("font, b font, b b font")
-                    judul = ""
-                    if font_el:
-                        judul = font_el.inner_text().strip()
-                    if not judul:
-                        judul = el.inner_text().strip()
-                    if not href or href in seen or not judul or len(judul) < 5:
+            # Strategi 1: Cari container .mb-10 yang berisi daftar berita
+            logger.info("[STUDENTSITE] Cari container .mb-10...")
+            containers = page.query_selector_all(".mb-10")
+            logger.info(f"[STUDENTSITE] Container .mb-10 ditemukan: {len(containers)}")
+            
+            # Ambil semua link <a> dari container .mb-10
+            news_links = []
+            seen = set()
+            
+            for container in containers:
+                # Ambil semua link dalam container ini
+                links = container.query_selector_all("a[href]")
+                for link_el in links:
+                    href = link_el.get_attribute("href") or ""
+                    if not href or href in seen:
                         continue
-                    seen.add(href)
-                    item = {
-                        "judul"   : judul,
-                        "tanggal" : "",
-                        "link"    : href,
-                        "sumber"  : SUMBER,
-                        "isi"     : "",
-                        "author"  : "",
-                        "file_url": "",
-                    }
-                    hasil.append(item)
-                    if limit and len(hasil) >= limit:
-                        break
-
-                if hasil:
-                    logger.info(f"[STUDENTSITE] Fallback h3: {len(hasil)} item")
-                    browser.close()
-                    return hasil
-
-            if not boxes:
-                logger.warning("[STUDENTSITE] Tidak ada konten ditemukan. Simpan debug HTML.")
+                    
+                    # Convert ke absolute URL
+                    abs_href = _abs(href)
+                    if abs_href in seen:
+                        continue
+                    
+                    # Ambil judul dari h3 dalam link
+                    h3_el = link_el.query_selector("h3")
+                    judul = ""
+                    if h3_el:
+                        judul = h3_el.inner_text().strip()
+                    
+                    # Jika h3 tidak ada, coba ambil teks dari link
+                    if not judul:
+                        judul = link_el.inner_text().strip()
+                    
+                    # Skip jika judul terlalu pendek atau tidak valid
+                    if not judul or len(judul) < 5:
+                        continue
+                    
+                    # Skip jika bukan link pengumuman (filter navigasi, dll)
+                    if "pengumuman" not in abs_href and "berita" not in abs_href:
+                        continue
+                    
+                    seen.add(abs_href)
+                    news_links.append({
+                        "judul": judul,
+                        "link": abs_href
+                    })
+            
+            logger.info(f"[STUDENTSITE] Link berita ditemukan: {len(news_links)}")
+            
+            # Fallback: jika tidak ada link dari .mb-10, cari semua link ke /pengumuman/
+            if not news_links:
+                logger.info("[STUDENTSITE] Fallback: cari link /pengumuman/ atau /v4/pengumuman/...")
+                all_links = page.query_selector_all("a[href*='/pengumuman/'], a[href*='/v4/pengumuman/']")
+                
+                for link_el in all_links:
+                    href = link_el.get_attribute("href") or ""
+                    abs_href = _abs(href)
+                    
+                    if abs_href in seen:
+                        continue
+                    
+                    # Ambil judul
+                    h3_el = link_el.query_selector("h3")
+                    judul = h3_el.inner_text().strip() if h3_el else link_el.inner_text().strip()
+                    
+                    if not judul or len(judul) < 5:
+                        continue
+                    
+                    seen.add(abs_href)
+                    news_links.append({
+                        "judul": judul,
+                        "link": abs_href
+                    })
+                
+                logger.info(f"[STUDENTSITE] Fallback: {len(news_links)} link ditemukan")
+            
+            if not news_links:
+                logger.warning("[STUDENTSITE] Tidak ada berita ditemukan. Simpan debug HTML.")
                 with open(DEBUG_HTML_FILE, "w", encoding="utf-8") as f:
                     f.write(html)
                 logger.warning(f"[STUDENTSITE] Debug: {os.path.abspath(DEBUG_HTML_FILE)}")
                 browser.close()
                 return []
-
-            if limit:
-                boxes = boxes[:limit]
-
-            logger.info(f"[STUDENTSITE] Akan membuka {len(boxes)} halaman detail...")
             
-            for box in boxes:
+            # Apply limit
+            if limit:
+                news_links = news_links[:limit]
+            
+            logger.info(f"[STUDENTSITE] Akan membuka {len(news_links)} halaman detail...")
+            
+            # Buka setiap halaman detail
+            for news in news_links:
                 item = {
-                    "judul"   : "",
+                    "judul"   : news["judul"],
                     "tanggal" : "",
-                    "link"    : URL,
+                    "link"    : news["link"],
                     "sumber"  : SUMBER,
                     "isi"     : "",
                     "author"  : "",
                     "file_url": "",
                 }
+                
                 try:
-                    # Judul + link dari h3.content-box-header a
-                    # Struktur: h3 > a > b > b > font
-                    link_el = box.query_selector("h3.content-box-header a")
-
-                    if link_el:
-                        href = link_el.get_attribute("href") or ""
-                        item["link"] = _abs(href) if href else URL
-
-                        # Ambil teks dari nested font/b
-                        font_el = box.query_selector(
-                            "h3.content-box-header a font, "
-                            "h3.content-box-header a b font, "
-                            "h3.content-box-header a b b font"
-                        )
-                        if font_el:
-                            item["judul"] = font_el.inner_text().strip()
-                        else:
-                            item["judul"] = link_el.inner_text().strip()
-                    else:
-                        # Coba langsung dari h3
-                        h3_el = box.query_selector("h3.content-box-header, h3")
-                        if h3_el:
-                            a_el = h3_el.query_selector("a")
-                            if a_el:
-                                href = a_el.get_attribute("href") or ""
-                                item["link"] = _abs(href) if href else URL
-                            font_el = h3_el.query_selector("font")
-                            item["judul"] = (
-                                font_el.inner_text().strip() if font_el
-                                else h3_el.inner_text().strip()
-                            )
-
-                    # Tanggal dari div.font-gray
-                    tgl_el = box.query_selector("div.font-gray")
-                    if tgl_el:
-                        raw = tgl_el.inner_text().strip()
-                        match = re.search(r"pada\s+(\d{4}-\d{2}-\d{2})", raw)
+                    dpage = ctx.new_page()
+                    dpage.goto(item["link"], timeout=30000, wait_until="domcontentloaded")
+                    dpage.wait_for_timeout(2000)
+                    
+                    # Ambil judul dari detail page (fallback jika judul list kosong)
+                    if not item["judul"] or len(item["judul"]) < 5:
+                        judul_detail = dpage.query_selector("h1.text-2xl, h1")
+                        if judul_detail:
+                            item["judul"] = judul_detail.inner_text().strip()
+                    
+                    # Ambil tanggal dari div dengan class khusus
+                    tanggal_el = dpage.query_selector(
+                        "div.flex.items-center.gap-1\\.5.text-sm.text-gray-400, "
+                        "div[class*='flex items-center'], "
+                        "div[class*='text-gray-400']"
+                    )
+                    if tanggal_el:
+                        tanggal_text = tanggal_el.inner_text().strip()
+                        # Extract tanggal jika ada format tanggal
+                        match = re.search(r"(\d{1,2}\s+\w+\s+\d{4}|\d{4}-\d{2}-\d{2}|\d{1,2}/\d{1,2}/\d{4})", tanggal_text)
                         if match:
                             item["tanggal"] = match.group(1)
-                        elif raw:
-                            item["tanggal"] = raw[:50]
-
-                    # Jika link masih homepage, cari link detail internal di dalam box
-                    if item["link"] in [URL, BASE_URL, BASE_URL + "/"]:
-                        detail_el = box.query_selector(
-                            "a[href*='/site/berita/'], "
-                            "a[href*='/berita/'], "
-                            "a[href*='/news/']"
-                        )
-                        if detail_el:
-                            d_href = detail_el.get_attribute("href") or ""
-                            if d_href:
-                                item["link"] = _abs(d_href)
-
-                    if not item["judul"]:
-                        continue
-
-                    # WAJIB buka halaman detail untuk ambil isi dari .content-box-wrapper
-                    if item["link"] not in [URL, BASE_URL, BASE_URL + "/"]:
-                        try:
-                            dpage = ctx.new_page()
-                            dpage.goto(item["link"], timeout=30000, wait_until="domcontentloaded")
-                            dpage.wait_for_timeout(2000)
-                            
-                            # Ambil isi dari .content-box-wrapper
-                            # Gunakan inner_text() untuk mempertahankan newline
-                            isi_wrapper = dpage.query_selector(".content-box-wrapper")
-                            if isi_wrapper:
-                                item["isi"] = isi_wrapper.inner_text().strip()
-                            
-                            # Link eksternal di dalam konten → file_url
-                            ext_links = dpage.query_selector_all("a[href^='http']")
-                            for ext_el in ext_links:
-                                ext_href = ext_el.get_attribute("href") or ""
-                                if ext_href and "studentsite.gunadarma.ac.id" not in ext_href:
-                                    if ext_href != item["link"]:
-                                        item["file_url"] = ext_href
-                                        break  # Ambil yang pertama
-                            
-                            dpage.close()
-                            logger.info(f"[STUDENTSITE] OK (detail): {item['judul'][:60]!r}")
-                        except Exception as e:
-                            logger.warning(f"[STUDENTSITE] Gagal buka detail {item['link']}: {e}")
-                            try:
-                                dpage.close()
-                            except Exception:
-                                pass
-                    else:
-                        logger.warning(f"[STUDENTSITE] Link tidak valid, skip: {item['judul'][:60]}")
-                        continue
-
+                        elif tanggal_text:
+                            item["tanggal"] = tanggal_text[:50]
+                    
+                    # Ambil isi dari .prose-content
+                    # Gunakan inner_text() untuk mempertahankan newline
+                    isi_el = dpage.query_selector(
+                        ".prose-content.text-gray-700.leading-relaxed.whitespace-pre-wrap, "
+                        ".prose-content, "
+                        "[class*='prose-content']"
+                    )
+                    if isi_el:
+                        item["isi"] = isi_el.inner_text().strip()
+                    
+                    # Fallback isi jika selector utama tidak ditemukan
+                    if not item["isi"]:
+                        # Coba selector alternatif
+                        isi_alt = dpage.query_selector(".content, article, main")
+                        if isi_alt:
+                            item["isi"] = isi_alt.inner_text().strip()
+                    
+                    # Link eksternal di dalam konten → file_url
+                    if item["isi"]:
+                        ext_links = dpage.query_selector_all("a[href^='http']")
+                        for ext_el in ext_links:
+                            ext_href = ext_el.get_attribute("href") or ""
+                            if ext_href and "studentsite.gunadarma.ac.id" not in ext_href:
+                                if ext_href != item["link"]:
+                                    item["file_url"] = ext_href
+                                    break  # Ambil yang pertama
+                    
+                    dpage.close()
+                    logger.info(f"[STUDENTSITE] OK (detail): {item['judul'][:60]!r}")
+                    
                 except Exception as e:
-                    logger.warning(f"[STUDENTSITE] Error proses box: {e}")
-                    continue
-
+                    logger.warning(f"[STUDENTSITE] Gagal buka detail {item['link']}: {e}")
+                    try:
+                        dpage.close()
+                    except Exception:
+                        pass
+                    # Tetap tambahkan item meskipun detail gagal
+                
                 hasil.append(item)
-
+            
             browser.close()
             browser = None
 

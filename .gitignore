@@ -1,62 +1,183 @@
-# Python cache
+# ============================================================
+# .gitignore - Sistem Agregasi Pengumuman Gunadarma
+# ============================================================
+
+# ============================================================
+# Environment Variables & Secrets
+# ============================================================
+# File konfigurasi lokal yang berisi webhook, password, token
+.env
+.env.local
+.env.*.local
+
+# Jangan ignore template konfigurasi
+!.env.example
+
+# ============================================================
+# Python Cache & Virtual Environment
+# ============================================================
 __pycache__/
 *.py[cod]
 *$py.class
+*.so
 
 # Virtual environment
 venv/
 .venv/
 env/
 ENV/
+virtualenv/
 
-# Environment variables
-.env
-.env.local
-.env.*.local
+# Python tools cache
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.cover
+.hypothesis/
 
-# Logs
-logs/*
+# ============================================================
+# Logs & Runtime Files
+# ============================================================
+# Log files (preserve .gitkeep untuk folder structure)
+logs/*.log
 !logs/.gitkeep
-*.log
 
-# Debug output
-debug_*.html
-debug_*.png
-debug_*.json
-
-# Database dump / local database files
-*.sql
-*.sqlite
-*.sqlite3
-*.db
-
-# Playwright / browser test artifacts
-test-results/
-playwright-report/
-.playwright/
-downloads/
-
-# OS files
-.DS_Store
-Thumbs.db
-desktop.ini
-
-# IDE / editor
-.vscode/
-.idea/
-
-# Temporary files
+# Runtime temporary files
 *.tmp
 *.temp
 *.bak
 *.swp
+*~
 
-# Coverage / testing cache
-.pytest_cache/
-.coverage
-htmlcov/
+# ============================================================
+# Database Files
+# ============================================================
+# Database dumps dan backups lokal
+*.sql
+*.db
+*.sqlite
+*.sqlite3
+backup/
+backups/
+dumps/
 
-# Build artifacts
+# ============================================================
+# Debug Output
+# ============================================================
+# File HTML debug dari scraper
+debug_*.html
+debug_*.htm
+debug_*.json
+debug_*.xml
+
+# Screenshots dan artifacts testing
+screenshots/
+test-results/
+playwright-report/
+.playwright/
+downloads/
+*.har
+
+# ============================================================
+# Dokumen Pribadi & Laporan
+# ============================================================
+# Folder docs berisi dokumen kerja pribadi, referensi laporan,
+# diagram, dan file pendukung Proyek Akhir (PI)
+docs/
+
+# File dokumen umum (jika ada di root atau tempat lain)
+*.docx
+*.doc
+*.pptx
+*.ppt
+*.xlsx
+*.xls
+*.pdf
+
+# File gambar dan diagram
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.bmp
+*.webp
+*.svg
+*.ico
+*.drawio
+*.mmd
+
+# File export data
+*.csv
+*.json.bak
+*.xml.bak
+
+# ============================================================
+# Editor & IDE
+# ============================================================
+# Visual Studio Code
+.vscode/
+*.code-workspace
+
+# PyCharm / IntelliJ
+.idea/
+*.iml
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# ============================================================
+# Operating System
+# ============================================================
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+desktop.ini
+$RECYCLE.BIN/
+
+# Linux
+*~
+.directory
+
+# ============================================================
+# Build & Distribution
+# ============================================================
 build/
 dist/
 *.egg-info/
+*.egg
+
+# ============================================================
+# Misc
+# ============================================================
+# Node modules (jika ada frontend tools)
+node_modules/
+
+# Temporary folders
+tmp/
+temp/
+
+# ============================================================
+# IMPORTANT: Files to Keep in Repository
+# ============================================================
+# Pastikan file berikut TIDAK di-ignore:
+# - main.py
+# - config.py
+# - requirements.txt
+# - .env.example
+# - README.md
+# - scraper/*.py
+# - database/*.py
+# - services/*.py
+# - notifier/*.py
+# - utils/*.py
+# ============================================================
