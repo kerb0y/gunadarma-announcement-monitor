@@ -21,7 +21,7 @@ import re
 import os
 from typing import List, Dict, Optional
 
-from utils.logger import logger
+from utils.logger import logger, clean_log_text, log_content_length
 
 SUMBER          = "STUDENTSITE"
 URL             = "https://studentsite.gunadarma.ac.id/v4/pengumuman"
@@ -72,7 +72,7 @@ def scrape_studentsite(limit: Optional[int] = None) -> List[Dict]:
                 return []
 
             html = page.content()
-            logger.info(f"[STUDENTSITE] HTML: {len(html):,} char")
+            logger.info(f"[STUDENTSITE] {log_content_length(html, 'HTML')}")
 
             # Strategi 1: Cari container .mb-10 yang berisi daftar berita
             logger.info("[STUDENTSITE] Cari container .mb-10...")
@@ -285,7 +285,9 @@ def scrape_studentsite(limit: Optional[int] = None) -> List[Dict]:
                                     break  # Ambil yang pertama
                     
                     dpage.close()
-                    logger.info(f"[STUDENTSITE] OK (detail): {item['judul'][:60]!r}")
+                    logger.info(f"[STUDENTSITE] OK (detail): {clean_log_text(item['judul'], 70)}")
+                    if item['isi']:
+                        logger.info(f"[STUDENTSITE] {log_content_length(item['isi'], 'Isi')}")
                     
                 except Exception as e:
                     logger.warning(f"[STUDENTSITE] Gagal buka detail {item['link']}: {e}")

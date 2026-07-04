@@ -22,7 +22,7 @@ import os
 from typing import List, Dict, Optional
 from bs4 import BeautifulSoup
 
-from utils.logger import logger
+from utils.logger import logger, clean_log_text, log_content_length
 from utils.flaresolverr import is_flaresolverr_running, get_html_via_flaresolverr
 
 SUMBER          = "PENDAFTARAN"
@@ -188,7 +188,7 @@ def _scrape_dengan_flaresolverr(limit: Optional[int]) -> List[Dict]:
         logger.error("[PENDAFTARAN] FlareSolverr gagal.")
         return []
 
-    logger.info(f"[PENDAFTARAN] HTML: {len(html):,} char")
+    logger.info(f"[PENDAFTARAN] {log_content_length(html, 'HTML')}")
 
     # Cek apakah masih Cloudflare
     if "Just a moment" in html or "cf-browser-verification" in html:
@@ -217,7 +217,9 @@ def _scrape_dengan_flaresolverr(limit: Optional[int]) -> List[Dict]:
         detail_html = get_html_via_flaresolverr(href)
         if detail_html:
             _parse_detail_html(detail_html, item)
-            logger.info(f"[PENDAFTARAN] OK: {item['judul'][:60]!r}")
+            logger.info(f"[PENDAFTARAN] OK: {clean_log_text(item['judul'], 60)}")
+            if item.get('isi'):
+                logger.info(f"[PENDAFTARAN] {log_content_length(item['isi'], 'Isi')}")
         else:
             logger.warning(f"[PENDAFTARAN] Gagal detail: {href}")
 
@@ -341,7 +343,9 @@ def _scrape_dengan_playwright(limit: Optional[int]) -> List[Dict]:
                         item["file_url"] = file_el.get_attribute("href") or ""
                     
                     dpage.close()
-                    logger.info(f"[PENDAFTARAN] OK: {item['judul'][:60]!r}")
+                    logger.info(f"[PENDAFTARAN] OK: {clean_log_text(item['judul'], 60)}")
+                    if item.get('isi'):
+                        logger.info(f"[PENDAFTARAN] {log_content_length(item['isi'], 'Isi')}")
                 except Exception as e:
                     logger.warning(f"[PENDAFTARAN] Gagal detail {href}: {e}")
                     try:

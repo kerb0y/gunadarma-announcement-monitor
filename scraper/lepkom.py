@@ -14,7 +14,7 @@ Selector aktual (diverifikasi Juni 2026 dari user):
 import os
 from typing import List, Dict, Optional
 
-from utils.logger import logger
+from utils.logger import logger, clean_log_text, log_content_length
 
 SUMBER          = "LEPKOM"
 URL             = "https://vm.lepkom.gunadarma.ac.id/pengumuman"
@@ -65,7 +65,7 @@ def scrape_lepkom(limit: Optional[int] = None) -> List[Dict]:
                 return []
 
             html = page.content()
-            logger.info(f"[LEPKOM] HTML: {len(html):,} char")
+            logger.info(f"[LEPKOM] {log_content_length(html, 'HTML')}")
 
             # Kumpulkan link dari widget recent-posts
             logger.info("[LEPKOM] Cari link pengumuman dari widget recent-posts...")
@@ -192,7 +192,9 @@ def scrape_lepkom(limit: Optional[int] = None) -> List[Dict]:
                         item["file_url"] = _abs(file_el.get_attribute("href") or "")
 
                     dpage.close()
-                    logger.info(f"[LEPKOM] OK: {item['judul'][:60]!r}")
+                    logger.info(f"[LEPKOM] OK: {clean_log_text(item['judul'], 70)}")
+                    if item['isi']:
+                        logger.info(f"[LEPKOM] {log_content_length(item['isi'], 'Isi')}")
 
                 except Exception as e:
                     logger.warning(f"[LEPKOM] Gagal buka detail {href}: {e}")

@@ -18,3 +18,6 @@ requests==2.32.3
 
 # Membaca file .env
 python-dotenv==1.0.1
+
+# Terminal colors (cross-platform)
+colorama==0.4.6

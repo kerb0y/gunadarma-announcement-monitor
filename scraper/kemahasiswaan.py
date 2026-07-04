@@ -25,7 +25,7 @@ import os
 from typing import List, Dict, Optional, Tuple
 from bs4 import BeautifulSoup
 
-from utils.logger import logger
+from utils.logger import logger, clean_log_text, log_content_length
 from utils.flaresolverr import is_flaresolverr_running, get_html_via_flaresolverr
 
 SUMBER          = "KEMAHASISWAAN"
@@ -202,9 +202,8 @@ def _format_delegasi_table(cells: List[str]) -> str:
     
     result = "\n".join(lines)
     
-    # Log preview
-    preview_len = min(200, len(result))
-    logger.info(f"[KEMAHASISWAAN] Preview tabel delegasi: {result[:preview_len]}...")
+    # Log preview (gunakan clean_log_text untuk batasi panjang)
+    logger.info(f"[KEMAHASISWAAN] Preview tabel delegasi: {clean_log_text(result, 150)}")
     
     return result
 
@@ -423,7 +422,9 @@ def _parse_detail_html(html: str, item: dict):
         item["isi"] = processed_text
         
         if has_table:
-            logger.info("[KEMAHASISWAAN] Tabel delegasi berhasil diformat")
+            logger.info(f"[KEMAHASISWAAN] Tabel delegasi berhasil diformat. {log_content_length(processed_text, 'Total konten')}")
+        else:
+            logger.info(f"[KEMAHASISWAAN] {log_content_length(processed_text, 'Isi')}")
     else:
         item["isi"] = ""
 
@@ -468,7 +469,7 @@ def _scrape_dengan_flaresolverr(limit: Optional[int]) -> List[Dict]:
         detail_html = get_html_via_flaresolverr(href)
         if detail_html:
             _parse_detail_html(detail_html, item)
-            logger.info(f"[KEMAHASISWAAN] OK: {item['judul'][:60]!r}")
+            logger.info(f"[KEMAHASISWAAN] OK: {clean_log_text(item['judul'], 60)}")
         else:
             logger.warning(f"[KEMAHASISWAAN] Gagal detail: {href}")
         hasil.append(item)
@@ -558,7 +559,7 @@ def _scrape_dengan_playwright(limit: Optional[int]) -> List[Dict]:
                     dpage.wait_for_timeout(2000)
                     _parse_detail_html(dpage.content(), item)
                     dpage.close()
-                    logger.info(f"[KEMAHASISWAAN] OK: {item['judul'][:60]!r}")
+                    logger.info(f"[KEMAHASISWAAN] OK: {clean_log_text(item['judul'], 60)}")
                 except Exception as e:
                     logger.warning(f"[KEMAHASISWAAN] Gagal detail {href}: {e}")
                     try:
